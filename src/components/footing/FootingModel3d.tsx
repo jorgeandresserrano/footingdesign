@@ -14,11 +14,33 @@ export interface FootingGeometry {
 
 interface Props {
   geometry: FootingGeometry;
-  unit: string;
 }
 
 function clampDimension(value: number) {
   return Math.max(value, 0.05);
+}
+
+function AxisArrow({
+  color,
+  length,
+  rotation,
+}: {
+  color: string;
+  length: number;
+  rotation: [number, number, number];
+}) {
+  return (
+    <group rotation={rotation}>
+      <mesh position={[0, length / 2, 0]}>
+        <cylinderGeometry args={[0.015, 0.015, length, 16]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+      <mesh position={[0, length, 0]}>
+        <coneGeometry args={[0.055, 0.16, 24]} />
+        <meshStandardMaterial color={color} />
+      </mesh>
+    </group>
+  );
 }
 
 function FootingScene({ geometry }: { geometry: FootingGeometry }) {
@@ -30,6 +52,8 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
   const pedestalHeight = clampDimension(geometry.pedestalHeight);
   const modelSpan = Math.max(footingLength, footingWidth, pedestalHeight);
   const cameraDistance = Math.max(modelSpan * 1.35, 3);
+  const axisLength = Math.max(modelSpan * 0.28, 0.7);
+  const axisOriginY = footingThickness + pedestalHeight + 0.08;
 
   return (
     <>
@@ -53,6 +77,23 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
           <boxGeometry args={[pedestalLength, pedestalHeight, pedestalWidth]} />
           <meshStandardMaterial color="#d2d0ca" roughness={0.74} />
         </mesh>
+      </group>
+      <group position={[0, axisOriginY, 0]}>
+        <AxisArrow
+          color="#dc2626"
+          length={axisLength}
+          rotation={[0, 0, -Math.PI / 2]}
+        />
+        <AxisArrow
+          color="#2563eb"
+          length={axisLength}
+          rotation={[Math.PI / 2, 0, 0]}
+        />
+        <AxisArrow
+          color="#16a34a"
+          length={axisLength}
+          rotation={[0, 0, 0]}
+        />
       </group>
       <Grid
         position={[0, -footingThickness - 0.01, 0]}
@@ -85,7 +126,7 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
   );
 }
 
-export function FootingModel3d({ geometry, unit }: Props) {
+export function FootingModel3d({ geometry }: Props) {
   const modelSpan = Math.max(
     geometry.footingLength,
     geometry.footingWidth,
@@ -108,8 +149,19 @@ export function FootingModel3d({ geometry, unit }: Props) {
         <color attach="background" args={["#f8fafc"]} />
         <FootingScene geometry={geometry} />
       </Canvas>
-      <div className="pointer-events-none absolute left-3 top-3 rounded-md border bg-white/85 px-2 py-1 text-[11px] font-medium text-slate-600 shadow-sm backdrop-blur dark:bg-slate-950/75 dark:text-slate-300">
-        Drag to rotate · Scroll to zoom · {unit}
+      <div className="pointer-events-none absolute bottom-3 left-3 rounded-md border bg-white/85 px-2 py-1 text-[11px] font-medium shadow-sm backdrop-blur dark:bg-slate-950/75">
+        <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+          <span className="size-2 rounded-full bg-red-600" />
+          X / Hx
+        </div>
+        <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+          <span className="size-2 rounded-full bg-blue-600" />
+          Z / Hz
+        </div>
+        <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+          <span className="size-2 rounded-full bg-green-600" />
+          P / T
+        </div>
       </div>
     </div>
   );
