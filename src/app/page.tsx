@@ -492,6 +492,14 @@ function isEmptyLoadCase(loadCase: LoadCase) {
   );
 }
 
+function nameUntitledLoadCases(loadCases: LoadCase[]) {
+  return loadCases.map((loadCase, index) =>
+    !isEmptyLoadCase(loadCase) && loadCase.name.trim() === ""
+      ? { ...loadCase, name: `Untitled LC # ${index + 1}` }
+      : loadCase
+  );
+}
+
 function ensureTrailingBlank(loadCases: LoadCase[]) {
   const next = [...loadCases];
   while (next.length > 0 && isEmptyLoadCase(next[next.length - 1])) {
@@ -1306,6 +1314,13 @@ export default function Home() {
     setEditingCellValue("");
   };
 
+  const closeLoadCaseTable = () => {
+    setCurrentLoadCases((current) =>
+      ensureTrailingBlank(nameUntitledLoadCases(current))
+    );
+    setLoadTableOpen(false);
+  };
+
 
   const focusLoadCaseCell = (position: CellPosition) => {
     requestAnimationFrame(() => {
@@ -1342,7 +1357,7 @@ export default function Home() {
   };
 
   const moveOrExtendCellSelection = (
-    event: KeyboardEvent<HTMLDivElement>,
+    event: KeyboardEvent<HTMLElement>,
     row: number,
     column: number
   ) => {
@@ -1427,6 +1442,48 @@ export default function Home() {
     updateLoadCase(rowIndex, column.key, value);
     setEditingCell(null);
     setEditingCellValue("");
+  };
+
+  const commitAndMoveLoadCaseCell = (
+    event: KeyboardEvent<HTMLElement>,
+    rowIndex: number,
+    columnIndex: number,
+    value: string
+  ) => {
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      commitLoadCaseCell(rowIndex, columnIndex, value);
+      moveOrExtendCellSelection(event, rowIndex - 1, columnIndex);
+      return;
+    }
+
+    if (event.key === "ArrowDown" || event.key === "Enter") {
+      event.preventDefault();
+      commitLoadCaseCell(rowIndex, columnIndex, value);
+      if (event.key === "ArrowDown") {
+        moveOrExtendCellSelection(event, rowIndex + 1, columnIndex);
+      } else {
+        moveCellSelection(rowIndex + 1, columnIndex);
+      }
+      return;
+    }
+
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      commitLoadCaseCell(rowIndex, columnIndex, value);
+      moveOrExtendCellSelection(event, rowIndex, columnIndex - 1);
+      return;
+    }
+
+    if (event.key === "ArrowRight" || event.key === "Tab") {
+      event.preventDefault();
+      commitLoadCaseCell(rowIndex, columnIndex, value);
+      if (event.key === "ArrowRight") {
+        moveOrExtendCellSelection(event, rowIndex, columnIndex + 1);
+      } else {
+        moveCellSelection(rowIndex, columnIndex + 1);
+      }
+    }
   };
 
   const pasteLoadCases = (
@@ -1535,6 +1592,7 @@ export default function Home() {
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
       clearSelectedCells();
+      focusLoadCaseCell({ row: rowIndex, column: columnIndex });
       return;
     }
 
@@ -1938,15 +1996,12 @@ export default function Home() {
                                         setEditingCellValue(event.target.value)
                                       }
                                       onKeyDown={(event) => {
-                                        if (event.key === "Enter") {
-                                          event.preventDefault();
-                                          commitLoadCaseCell(
-                                            rowIndex,
-                                            columnIndex,
-                                            editingCellValue
-                                          );
-                                          focusLoadCaseCell(position);
-                                        }
+                                        commitAndMoveLoadCaseCell(
+                                          event,
+                                          rowIndex,
+                                          columnIndex,
+                                          editingCellValue
+                                        );
                                         if (event.key === "Escape") {
                                           event.preventDefault();
                                           setEditingCell(null);
@@ -2039,7 +2094,7 @@ export default function Home() {
                     <Copy />
                     {selectedCells ? "Copy selection" : "Copy table"}
                   </Button>
-                  <Button type="button" onClick={() => setLoadTableOpen(false)}>
+                  <Button type="button" onClick={closeLoadCaseTable}>
                     Done
                   </Button>
                 </div>
