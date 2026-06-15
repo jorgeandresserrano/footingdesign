@@ -13,7 +13,7 @@ import {
 interface Props {
   id: string;
   label: React.ReactNode;
-  unit?: string;
+  unit?: React.ReactNode;
   value: number;
   onChange: (n: number) => void;
   step?: number;
@@ -96,7 +96,7 @@ export function NumField({
               onChange(fallbackValue);
             }
           }}
-          className={unit ? "pr-12" : undefined}
+          className={unit ? "pr-16" : undefined}
         />
         {unit ? (
           <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">

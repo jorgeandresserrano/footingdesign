@@ -1,5 +1,6 @@
 "use client";
 
+import katex from "katex";
 import dynamic from "next/dynamic";
 import {
   AlertTriangle,
@@ -103,6 +104,8 @@ const KN_M_TO_KIP_FT = 0.7375621493;
 const KN_PER_M_TO_KIP_PER_FT = KN_TO_KIP / M_TO_FT;
 const KN_M_PER_M_TO_KIP_FT_PER_FT = KN_M_TO_KIP_FT / M_TO_FT;
 const MM2_PER_M_TO_IN2_PER_FT = 0.0015500031 / M_TO_FT;
+const APP_DATE = "2026-06-15";
+const APP_VERSION = "2";
 
 const BUILDING_CODE_OPTIONS: BuildingCode[] = [
   "IBC-2018",
@@ -151,6 +154,131 @@ const CODE_REFERENCES: Record<
     concreteStandard: "CSA A23.3-24",
   },
 };
+
+const MATH_TEXT_PATTERNS: Array<{
+  pattern: RegExp;
+  tex: (match: RegExpMatchArray) => string;
+}> = [
+  {
+    pattern: /q = P\/A \+\/- Mx\/Sx \+\/- Mz\/Sz/,
+    tex: () => "q = \\frac{P}{A} \\pm \\frac{M_x}{S_x} \\pm \\frac{M_z}{S_z}",
+  },
+  {
+    pattern: /H <= mu N \/ ([0-9.]+)/,
+    tex: (match) => `H \\le \\frac{\\mu N}{${match[1]}}`,
+  },
+  {
+    pattern: /phi Vc = 0\.75 x 0\.17 lambda sqrt\(fc'\) bw d/,
+    tex: () => "\\phi V_c = 0.75 \\times 0.17\\lambda\\sqrt{f'_c}\\,b_w d",
+  },
+  {
+    pattern: /phi vc = 0\.75 x least concrete two-way shear stress/,
+    tex: () => "\\phi v_c = 0.75 \\times \\text{least concrete two-way shear stress}",
+  },
+  {
+    pattern: /phi_c = ([0-9.]+) and phi_s = ([0-9.]+)/,
+    tex: (match) => `\\phi_c = ${match[1]}\\;\\text{and}\\;\\phi_s = ${match[2]}`,
+  },
+  {
+    pattern: /phi = ([0-9.]+)/,
+    tex: (match) => `\\phi = ${match[1]}`,
+  },
+  {
+    pattern: /D\/L\/W\/E/,
+    tex: () => "D/L/W/E",
+  },
+  {
+    pattern: /1\.2D \+ 1\.6L/,
+    tex: () => "1.2D + 1.6L",
+  },
+  {
+    pattern: /1\.4D/,
+    tex: () => "1.4D",
+  },
+  {
+    pattern: /D \+ L/,
+    tex: () => "D + L",
+  },
+  {
+    pattern: /Hx\/Hz/,
+    tex: () => "H_x/H_z",
+  },
+  {
+    pattern: /Mx\/Mz/,
+    tex: () => "M_x/M_z",
+  },
+  {
+    pattern: /\bP\b/,
+    tex: () => "P",
+  },
+  {
+    pattern: /\bT\b/,
+    tex: () => "T",
+  },
+  {
+    pattern: /0\.002Ag/,
+    tex: () => "0.002A_g",
+  },
+  {
+    pattern: /c\/d/,
+    tex: () => "c/d",
+  },
+  {
+    pattern: /d\/2/,
+    tex: () => "d/2",
+  },
+  {
+    pattern: /N = ([0-9.,-]+) kN/,
+    tex: (match) => `N = ${match[1]}\\,\\mathrm{kN}`,
+  },
+  {
+    pattern: /Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m/,
+    tex: (match) =>
+      `M_x = ${match[1]}\\,\\mathrm{kN\\cdot m},\\ M_z = ${match[2]}\\,\\mathrm{kN\\cdot m}`,
+  },
+  {
+    pattern: /qmin = ([0-9.,-]+) kPa/,
+    tex: (match) => `q_{min} = ${match[1]}\\,\\mathrm{kPa}`,
+  },
+  {
+    pattern: /FS = ([0-9.,-]+|infinite)/,
+    tex: (match) => `FS = ${match[1] === "infinite" ? "\\infty" : match[1]}`,
+  },
+  {
+    pattern: /dX = ([0-9.,-]+) mm, dZ = ([0-9.,-]+) mm/,
+    tex: (match) =>
+      `d_x = ${match[1]}\\,\\mathrm{mm},\\ d_z = ${match[2]}\\,\\mathrm{mm}`,
+  },
+  {
+    pattern: /Provided AsX = ([0-9.,-]+) mm2\/m/,
+    tex: (match) => `A_{s,x} = ${match[1]}\\,\\mathrm{mm^2/m}`,
+  },
+  {
+    pattern: /Provided AsZ = ([0-9.,-]+) mm2\/m/,
+    tex: (match) => `A_{s,z} = ${match[1]}\\,\\mathrm{mm^2/m}`,
+  },
+  {
+    pattern: /Required As = ([0-9.,-]+) mm2\/m; provided As = ([0-9.,-]+) mm2\/m/,
+    tex: (match) =>
+      `A_{s,req} = ${match[1]}\\,\\mathrm{mm^2/m};\\ A_s = ${match[2]}\\,\\mathrm{mm^2/m}`,
+  },
+  {
+    pattern: /c = ([0-9.,-]+) mm, limit = ([0-9.,-]+) mm/,
+    tex: (match) =>
+      `c = ${match[1]}\\,\\mathrm{mm},\\ c_{limit} = ${match[2]}\\,\\mathrm{mm}`,
+  },
+  {
+    pattern: /bo = ([0-9.,-]+) mm, d = ([0-9.,-]+) mm/,
+    tex: (match) =>
+      `b_o = ${match[1]}\\,\\mathrm{mm},\\ d = ${match[2]}\\,\\mathrm{mm}`,
+  },
+  {
+    pattern:
+      /vu direct = ([0-9.,-]+) MPa, vu\(Mx\) = ([0-9.,-]+) MPa, vu\(Mz\) = ([0-9.,-]+) MPa/,
+    tex: (match) =>
+      `v_u = ${match[1]}\\,\\mathrm{MPa},\\ v_u(M_x) = ${match[2]}\\,\\mathrm{MPa},\\ v_u(M_z) = ${match[3]}\\,\\mathrm{MPa}`,
+  },
+];
 
 interface MaterialInputs {
   concreteStrength: number;
@@ -490,6 +618,165 @@ function StatusBadge({ status }: { status: CheckStatus }) {
   );
 }
 
+function InlineMath({ tex }: { tex: string }) {
+  return (
+    <span
+      className="mx-0.5 whitespace-nowrap align-baseline [&_.katex]:text-[1.04em]"
+      dangerouslySetInnerHTML={{
+        __html: katex.renderToString(tex, {
+          throwOnError: false,
+          strict: false,
+        }),
+      }}
+    />
+  );
+}
+
+function texNumber(value: number, digits = 3) {
+  return fmt(value, digits).replace(/,/g, "{,}");
+}
+
+function unitTex(unit: string) {
+  if (!unit) return "";
+  const units: Record<string, string> = {
+    ft: "\\mathrm{ft}",
+    "ft³": "\\mathrm{ft^3}",
+    in: "\\mathrm{in}",
+    "in²/ft": "\\mathrm{in^2/ft}",
+    kip: "\\mathrm{kip}",
+    "kip/ft": "\\mathrm{kip/ft}",
+    "kip·ft": "\\mathrm{kip\\cdot ft}",
+    "kip·ft/ft": "\\mathrm{kip\\cdot ft/ft}",
+    kPa: "\\mathrm{kPa}",
+    ksf: "\\mathrm{ksf}",
+    kN: "\\mathrm{kN}",
+    "kN/m": "\\mathrm{kN/m}",
+    "kN/m³": "\\mathrm{kN/m^3}",
+    "kN·m": "\\mathrm{kN\\cdot m}",
+    "kN·m/m": "\\mathrm{kN\\cdot m/m}",
+    ksi: "\\mathrm{ksi}",
+    m: "\\mathrm{m}",
+    "m³": "\\mathrm{m^3}",
+    mm: "\\mathrm{mm}",
+    "mm²/m": "\\mathrm{mm^2/m}",
+    "mm2/m": "\\mathrm{mm^2/m}",
+    MPa: "\\mathrm{MPa}",
+    pcf: "\\mathrm{pcf}",
+  };
+  return units[unit] ?? `\\mathrm{${unit.replace(/\s+/g, "\\ ")}}`;
+}
+
+function MathUnit({ unit }: { unit: string }) {
+  return <InlineMath tex={unitTex(unit)} />;
+}
+
+function MathValue({
+  value,
+  unit,
+  digits = 3,
+}: {
+  value: number | null;
+  unit?: string;
+  digits?: number;
+}) {
+  if (value === null) return <>N/A</>;
+  if (!Number.isFinite(value)) return <InlineMath tex="\\infty" />;
+  const nextUnit = unit ? unitTex(unit) : "";
+  return (
+    <InlineMath
+      tex={`${texNumber(value, digits)}${nextUnit ? `\\,${nextUnit}` : ""}`}
+    />
+  );
+}
+
+function CheckValue({
+  value,
+  unit,
+  units,
+  digits = 3,
+}: {
+  value: number | null;
+  unit: CheckUnit;
+  units: UnitSystem;
+  digits?: number;
+}) {
+  if (value === null) return <>N/A</>;
+  if (!Number.isFinite(value)) return <InlineMath tex="\\infty" />;
+  return (
+    <MathValue
+      value={convertedValue(value, unit, units)}
+      unit={displayUnit(unit, units)}
+      digits={digits}
+    />
+  );
+}
+
+function FormulaValue({ tex }: { tex: string }) {
+  return <InlineMath tex={tex} />;
+}
+
+function loadColumnLabel(column: { key: LoadCaseColumn; label: string }) {
+  const labels: Partial<Record<LoadCaseColumn, string>> = {
+    P: "P",
+    Hx: "H_x",
+    Hz: "H_z",
+    Mx: "M_x",
+    Mz: "M_z",
+    T: "T",
+    foundationDeadLoadFactor: "D_f",
+  };
+  const tex = labels[column.key];
+  return tex ? <FormulaValue tex={tex} /> : column.label;
+}
+
+function MathText({ children }: { children: string }) {
+  const segments: Array<string | { tex: string }> = [];
+  let cursor = 0;
+
+  while (cursor < children.length) {
+    const remaining = children.slice(cursor);
+    let nextMatch: RegExpMatchArray | null = null;
+    let nextPattern: (typeof MATH_TEXT_PATTERNS)[number] | null = null;
+
+    for (const pattern of MATH_TEXT_PATTERNS) {
+      const match = remaining.match(pattern.pattern);
+      if (match?.index === undefined) continue;
+      if (
+        !nextMatch ||
+        match.index < nextMatch.index! ||
+        (match.index === nextMatch.index! && match[0].length > nextMatch[0].length)
+      ) {
+        nextMatch = match;
+        nextPattern = pattern;
+      }
+    }
+
+    if (!nextMatch || !nextPattern || nextMatch.index === undefined) {
+      segments.push(remaining);
+      break;
+    }
+
+    if (nextMatch.index > 0) {
+      segments.push(remaining.slice(0, nextMatch.index));
+    }
+
+    segments.push({ tex: nextPattern.tex(nextMatch) });
+    cursor += nextMatch.index + nextMatch[0].length;
+  }
+
+  return (
+    <>
+      {segments.map((segment, index) =>
+        typeof segment === "string" ? (
+          <span key={index}>{segment}</span>
+        ) : (
+          <InlineMath key={index} tex={segment.tex} />
+        )
+      )}
+    </>
+  );
+}
+
 function convertedValue(value: number, unit: CheckUnit, units: UnitSystem) {
   if (units === "SI") return value;
   if (unit === "kPa") return value * KPA_TO_KSF;
@@ -518,19 +805,6 @@ function displayUnit(unit: CheckUnit, units: UnitSystem) {
   if (unit === "mm") return "in";
   if (unit === "mm2/m") return "in²/ft";
   return unit;
-}
-
-function displayCheckValue(
-  value: number | null,
-  unit: CheckUnit,
-  units: UnitSystem,
-  digits = 3
-) {
-  if (value === null) return "N/A";
-  if (!Number.isFinite(value)) return "inf";
-  const nextValue = convertedValue(value, unit, units);
-  const nextUnit = displayUnit(unit, units);
-  return `${fmt(nextValue, digits)}${nextUnit ? ` ${nextUnit}` : ""}`;
 }
 
 function utilizationText(check: DesignCheck) {
@@ -1119,10 +1393,13 @@ export default function Home() {
                   <h2 id="load-table-heading" className="text-base font-semibold">
                     Load cases
                   </h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Paste tab-delimited cells from Excel. P, Hx, and Hz use{" "}
-                    {forceUnit}; Mx, Mz, and T use {momentUnit}. Drag across
-                    cells to select.
+	                  <p className="mt-1 text-sm text-muted-foreground">
+	                    Paste tab-delimited cells from Excel.{" "}
+	                    <FormulaValue tex="P" />, <FormulaValue tex="H_x" />, and{" "}
+	                    <FormulaValue tex="H_z" /> use{" "}
+	                    <MathUnit unit={forceUnit} />; <FormulaValue tex="M_x" />,{" "}
+	                    <FormulaValue tex="M_z" />, and <FormulaValue tex="T" /> use{" "}
+	                    <MathUnit unit={momentUnit} />. Drag across cells to select.
                   </p>
                 </div>
                 <Button
@@ -1165,13 +1442,17 @@ export default function Home() {
                           {loadCaseColumns.map((column) => (
                             <TableHead key={column.key} className="border-r">
                               <div className="space-y-0.5">
-                                <div>{column.label}</div>
+	                                <div>{loadColumnLabel(column)}</div>
                                 {column.unitType !== "text" &&
                                 column.unitType !== "factor" ? (
                                   <div className="text-[10px] font-normal text-muted-foreground">
-                                    {column.unitType === "force"
-                                      ? forceUnit
-                                      : momentUnit}
+	                                    <MathUnit
+	                                      unit={
+	                                        column.unitType === "force"
+	                                          ? forceUnit
+	                                          : momentUnit
+	                                      }
+	                                    />
                                   </div>
                                 ) : null}
                               </div>
@@ -1261,9 +1542,10 @@ export default function Home() {
 
               <div className="flex flex-wrap items-center justify-between gap-3 border-t px-5 py-4">
                 <p className="text-xs text-muted-foreground">
-                  Coordinates: X/Z are horizontal in plan; P and T act along or
-                  about the vertical axis at top of pedestal. The last row stays
-                  blank for new load cases.
+	                  Coordinates: <FormulaValue tex="x/z" /> are horizontal in
+	                  plan; <FormulaValue tex="P" /> and{" "}
+	                  <FormulaValue tex="T" /> act along or about the vertical axis
+	                  at top of pedestal. The last row stays blank for new load cases.
                 </p>
                 <div className="flex items-center gap-2">
                   <Button
@@ -1300,7 +1582,7 @@ export default function Home() {
                 <NumField
                   id="footingLength"
                   label="Footing length"
-                  unit={lengthUnit}
+                  unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.footingLength}
                   min={0.05}
                   onChange={(value) => updateGeometry("footingLength", value)}
@@ -1309,7 +1591,7 @@ export default function Home() {
                 <NumField
                   id="footingWidth"
                   label="Footing width"
-                  unit={lengthUnit}
+                  unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.footingWidth}
                   min={0.05}
                   onChange={(value) => updateGeometry("footingWidth", value)}
@@ -1318,7 +1600,7 @@ export default function Home() {
                 <NumField
                   id="footingThickness"
                   label="Footing thickness"
-                  unit={lengthUnit}
+                  unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.footingThickness}
                   min={0.05}
                   onChange={(value) =>
@@ -1329,7 +1611,7 @@ export default function Home() {
                 <NumField
                   id="pedestalLength"
                   label="Pedestal footprint length"
-                  unit={lengthUnit}
+                  unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.pedestalLength}
                   min={0.05}
                   onChange={(value) => updateGeometry("pedestalLength", value)}
@@ -1338,7 +1620,7 @@ export default function Home() {
                 <NumField
                   id="pedestalWidth"
                   label="Pedestal footprint width"
-                  unit={lengthUnit}
+                  unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.pedestalWidth}
                   min={0.05}
                   onChange={(value) => updateGeometry("pedestalWidth", value)}
@@ -1347,7 +1629,7 @@ export default function Home() {
                 <NumField
                   id="pedestalHeight"
                   label="Pedestal visual height"
-                  unit={lengthUnit}
+                  unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.pedestalHeight}
                   min={0.05}
                   onChange={(value) => updateGeometry("pedestalHeight", value)}
@@ -1356,7 +1638,7 @@ export default function Home() {
                 <NumField
                   id="pedestalOffsetX"
                   label="Pedestal offset X"
-                  unit={lengthUnit}
+                  unit={<MathUnit unit={lengthUnit} />}
                   value={pedestalOffsetX}
                   min={-pedestalOffsetLimitX}
                   max={pedestalOffsetLimitX}
@@ -1366,7 +1648,7 @@ export default function Home() {
                 <NumField
                   id="pedestalOffsetZ"
                   label="Pedestal offset Z"
-                  unit={lengthUnit}
+                  unit={<MathUnit unit={lengthUnit} />}
                   value={pedestalOffsetZ}
                   min={-pedestalOffsetLimitZ}
                   max={pedestalOffsetLimitZ}
@@ -1387,7 +1669,7 @@ export default function Home() {
                 <NumField
                   id="concreteStrength"
                   label="Concrete strength"
-                  unit={strengthUnit}
+                  unit={<MathUnit unit={strengthUnit} />}
                   value={materials.concreteStrength}
                   min={0}
                   onChange={(value) =>
@@ -1398,7 +1680,7 @@ export default function Home() {
                 <NumField
                   id="rebarYield"
                   label="Rebar yield"
-                  unit={strengthUnit}
+                  unit={<MathUnit unit={strengthUnit} />}
                   value={materials.rebarYield}
                   min={0}
                   onChange={(value) => updateMaterials("rebarYield", value)}
@@ -1407,7 +1689,7 @@ export default function Home() {
                 <NumField
                   id="concreteUnitWeight"
                   label="Concrete unit weight"
-                  unit={unitWeightUnit}
+                  unit={<MathUnit unit={unitWeightUnit} />}
                   value={materials.concreteUnitWeight}
                   min={0}
                   onChange={(value) =>
@@ -1418,7 +1700,7 @@ export default function Home() {
                 <NumField
                   id="clearCover"
                   label="Clear cover"
-                  unit={coverUnit}
+                  unit={<MathUnit unit={coverUnit} />}
                   value={materials.clearCover}
                   min={0}
                   onChange={(value) => updateMaterials("clearCover", value)}
@@ -1427,7 +1709,7 @@ export default function Home() {
                 <NumField
                   id="allowableBearing"
                   label="Allowable bearing"
-                  unit={bearingUnit}
+                  unit={<MathUnit unit={bearingUnit} />}
                   value={materials.allowableBearing}
                   min={0}
                   onChange={(value) =>
@@ -1461,7 +1743,7 @@ export default function Home() {
                 <NumField
                   id="barDiameterX"
                   label="X bar diameter"
-                  unit={coverUnit}
+                  unit={<MathUnit unit={coverUnit} />}
                   value={reinforcement.barDiameterX}
                   min={0.1}
                   onChange={(value) =>
@@ -1472,7 +1754,7 @@ export default function Home() {
                 <NumField
                   id="barSpacingX"
                   label="X bar spacing"
-                  unit={coverUnit}
+                  unit={<MathUnit unit={coverUnit} />}
                   value={reinforcement.barSpacingX}
                   min={0.1}
                   onChange={(value) =>
@@ -1483,7 +1765,7 @@ export default function Home() {
                 <NumField
                   id="barDiameterZ"
                   label="Z bar diameter"
-                  unit={coverUnit}
+                  unit={<MathUnit unit={coverUnit} />}
                   value={reinforcement.barDiameterZ}
                   min={0.1}
                   onChange={(value) =>
@@ -1494,7 +1776,7 @@ export default function Home() {
                 <NumField
                   id="barSpacingZ"
                   label="Z bar spacing"
-                  unit={coverUnit}
+                  unit={<MathUnit unit={coverUnit} />}
                   value={reinforcement.barSpacingZ}
                   min={0.1}
                   onChange={(value) =>
@@ -1551,27 +1833,30 @@ export default function Home() {
                     <span className="text-muted-foreground">
                       Max compression
                     </span>
-                    <span className="text-right font-medium">
-                      {fmt(maxCompression)} {forceUnit}
-                    </span>
-                    <span className="text-muted-foreground">
-                      Max strength P
-                    </span>
-                    <span className="text-right font-medium">
-                      {fmt(maxStrengthCompression)} {forceUnit}
-                    </span>
+	                    <span className="text-right font-medium">
+	                      <MathValue value={maxCompression} unit={forceUnit} />
+	                    </span>
+	                    <span className="text-muted-foreground">
+	                      Max strength <FormulaValue tex="P" />
+	                    </span>
+	                    <span className="text-right font-medium">
+	                      <MathValue
+	                        value={maxStrengthCompression}
+	                        unit={forceUnit}
+	                      />
+	                    </span>
                     <span className="text-muted-foreground">
                       Governing case
                     </span>
-                    <span className="text-right font-medium">
-                      {governingLoadCase}
-                    </span>
+	                    <span className="text-right font-medium">
+	                      <MathText>{governingLoadCase}</MathText>
+	                    </span>
                     <span className="text-muted-foreground">
                       Bearing case
                     </span>
-                    <span className="text-right font-medium">
-                      {governingServiceBearing?.name || "None"}
-                    </span>
+	                    <span className="text-right font-medium">
+	                      <MathText>{governingServiceBearing?.name || "None"}</MathText>
+	                    </span>
                   </div>
                   <Button type="button" onClick={() => setLoadTableOpen(true)}>
                     Edit load table
@@ -1582,47 +1867,50 @@ export default function Home() {
                   <span className="text-muted-foreground">
                     Footing self-weight
                   </span>
-                  <span className="text-right font-medium">
-                    {displayCheckValue(
-                      designResults.summary.footingSelfWeight,
-                      "kN",
-                      units
-                    )}
-                  </span>
+	                  <span className="text-right font-medium">
+	                    <CheckValue
+	                      value={designResults.summary.footingSelfWeight}
+	                      unit="kN"
+	                      units={units}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">
                     Max service bearing
                   </span>
-                  <span className="text-right font-medium">
-                    {displayCheckValue(
-                      governingServiceBearing?.maxBearing ?? null,
-                      "kPa",
-                      units
-                    )}
-                  </span>
+	                  <span className="text-right font-medium">
+	                    <CheckValue
+	                      value={governingServiceBearing?.maxBearing ?? null}
+	                      unit="kPa"
+	                      units={units}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">
                     Min service bearing
                   </span>
-                  <span className="text-right font-medium">
-                    {displayCheckValue(
-                      governingServiceBearing?.minBearing ?? null,
-                      "kPa",
-                      units
-                    )}
-                  </span>
+	                  <span className="text-right font-medium">
+	                    <CheckValue
+	                      value={governingServiceBearing?.minBearing ?? null}
+	                      unit="kPa"
+	                      units={units}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">
                     Max strength net pressure
                   </span>
-                  <span className="text-right font-medium">
-                    {displayCheckValue(
-                      governingStrengthCase?.maxNetPressure ?? null,
-                      "kPa",
-                      units
-                    )}
-                  </span>
+	                  <span className="text-right font-medium">
+	                    <CheckValue
+	                      value={governingStrengthCase?.maxNetPressure ?? null}
+	                      unit="kPa"
+	                      units={units}
+	                    />
+	                  </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Table columns are Load case, P, Hx, Hz, Mx, Mz, and T. Values
-                  are at top of pedestal. Selected code controls concrete
+	                  Table columns are Load case, <FormulaValue tex="P" />,{" "}
+	                  <FormulaValue tex="H_x" />, <FormulaValue tex="H_z" />,{" "}
+	                  <FormulaValue tex="M_x" />, <FormulaValue tex="M_z" />, and{" "}
+	                  <FormulaValue tex="T" />. Values are at top of pedestal.
+	                  Selected code controls concrete
                   factors; load combinations must match {loadStandard}.
                 </p>
               </CardContent>
@@ -1641,80 +1929,98 @@ export default function Home() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-5">
-                <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
-                    <div className="text-xs text-muted-foreground">
-                      Effective depth X / Z
-                    </div>
-                    <div className="mt-1 space-y-0.5 font-medium">
-                      <div>
-                        X{" "}
-                        {displayCheckValue(
-                          designResults.summary.effectiveDepthX,
-                          "mm",
-                          units
-                        )}
-                      </div>
-                      <div>
-                        Z{" "}
-                        {displayCheckValue(
-                          designResults.summary.effectiveDepthZ,
-                          "mm",
-                          units
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
-                    <div className="text-xs text-muted-foreground">
-                      Provided As X / Z
-                    </div>
-                    <div className="mt-1 space-y-0.5 font-medium">
-                      <div>
-                        X{" "}
-                        {displayCheckValue(
-                          designResults.summary.providedAsX,
-                          "mm2/m",
-                          units,
-                          0
-                        )}
-                      </div>
-                      <div>
-                        Z{" "}
-                        {displayCheckValue(
-                          designResults.summary.providedAsZ,
-                          "mm2/m",
-                          units,
-                          0
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
-                    <div className="text-xs text-muted-foreground">
-                      Minimum As X / Z
-                    </div>
-                    <div className="mt-1 space-y-0.5 font-medium">
-                      <div>
-                        X{" "}
-                        {displayCheckValue(
-                          designResults.summary.minimumAsX,
-                          "mm2/m",
-                          units,
-                          0
-                        )}
-                      </div>
-                      <div>
-                        Z{" "}
-                        {displayCheckValue(
-                          designResults.summary.minimumAsZ,
-                          "mm2/m",
-                          units,
-                          0
-                        )}
-                      </div>
-                    </div>
-                  </div>
+	                <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+	                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
+	                    <div className="text-xs text-muted-foreground">
+	                      Effective depth <FormulaValue tex="d_x / d_z" />
+	                    </div>
+	                    <div className="mt-1 space-y-0.5 font-medium">
+	                      <div>
+	                        <FormulaValue
+	                          tex={`d_x = ${texNumber(
+	                            convertedValue(
+	                              designResults.summary.effectiveDepthX,
+	                              "mm",
+	                              units
+	                            )
+	                          )}\\,${unitTex(displayUnit("mm", units))}`}
+	                        />
+	                      </div>
+	                      <div>
+	                        <FormulaValue
+	                          tex={`d_z = ${texNumber(
+	                            convertedValue(
+	                              designResults.summary.effectiveDepthZ,
+	                              "mm",
+	                              units
+	                            )
+	                          )}\\,${unitTex(displayUnit("mm", units))}`}
+	                        />
+	                      </div>
+	                    </div>
+	                  </div>
+	                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
+	                    <div className="text-xs text-muted-foreground">
+	                      Provided <FormulaValue tex="A_s" />
+	                    </div>
+	                    <div className="mt-1 space-y-0.5 font-medium">
+	                      <div>
+	                        <FormulaValue
+	                          tex={`A_{s,x} = ${texNumber(
+	                            convertedValue(
+	                              designResults.summary.providedAsX,
+	                              "mm2/m",
+	                              units
+	                            ),
+	                            0
+	                          )}\\,${unitTex(displayUnit("mm2/m", units))}`}
+	                        />
+	                      </div>
+	                      <div>
+	                        <FormulaValue
+	                          tex={`A_{s,z} = ${texNumber(
+	                            convertedValue(
+	                              designResults.summary.providedAsZ,
+	                              "mm2/m",
+	                              units
+	                            ),
+	                            0
+	                          )}\\,${unitTex(displayUnit("mm2/m", units))}`}
+	                        />
+	                      </div>
+	                    </div>
+	                  </div>
+	                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
+	                    <div className="text-xs text-muted-foreground">
+	                      Minimum <FormulaValue tex="A_s" />
+	                    </div>
+	                    <div className="mt-1 space-y-0.5 font-medium">
+	                      <div>
+	                        <FormulaValue
+	                          tex={`A_{s,min,x} = ${texNumber(
+	                            convertedValue(
+	                              designResults.summary.minimumAsX,
+	                              "mm2/m",
+	                              units
+	                            ),
+	                            0
+	                          )}\\,${unitTex(displayUnit("mm2/m", units))}`}
+	                        />
+	                      </div>
+	                      <div>
+	                        <FormulaValue
+	                          tex={`A_{s,min,z} = ${texNumber(
+	                            convertedValue(
+	                              designResults.summary.minimumAsZ,
+	                              "mm2/m",
+	                              units
+	                            ),
+	                            0
+	                          )}\\,${unitTex(displayUnit("mm2/m", units))}`}
+	                        />
+	                      </div>
+	                    </div>
+	                  </div>
                   <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
                     <div className="text-xs text-muted-foreground">
                       Concrete design family
@@ -1730,17 +2036,21 @@ export default function Home() {
                     <div className="font-medium text-foreground">
                       Code basis
                     </div>
-                    {designResults.codeBasis.references.map((reference) => (
-                      <div key={reference}>{reference}</div>
-                    ))}
+	                    {designResults.codeBasis.references.map((reference) => (
+	                      <div key={reference}>
+	                        <MathText>{reference}</MathText>
+	                      </div>
+	                    ))}
                   </div>
                   <div className="space-y-1.5">
                     <div className="font-medium text-foreground">
                       Analysis assumptions
                     </div>
-                    {designResults.codeBasis.assumptions.map((assumption) => (
-                      <div key={assumption}>{assumption}</div>
-                    ))}
+	                    {designResults.codeBasis.assumptions.map((assumption) => (
+	                      <div key={assumption}>
+	                        <MathText>{assumption}</MathText>
+	                      </div>
+	                    ))}
                   </div>
                 </div>
 
@@ -1754,7 +2064,7 @@ export default function Home() {
                         <div className="min-w-0">
                           <div className="font-medium">{item.label}</div>
                           <div className="mt-1 text-[11px]/relaxed text-muted-foreground">
-                            {item.basis}
+                            <MathText>{item.basis}</MathText>
                           </div>
                         </div>
                       </div>
@@ -1763,17 +2073,25 @@ export default function Home() {
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
                         <div>
-                          <div className="text-muted-foreground">Demand</div>
-                          <div className="font-medium">
-                            {displayCheckValue(item.demand, item.unit, units)}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-muted-foreground">Capacity</div>
-                          <div className="font-medium">
-                            {displayCheckValue(item.capacity, item.unit, units)}
-                          </div>
-                        </div>
+	                          <div className="text-muted-foreground">Demand</div>
+	                          <div className="font-medium">
+	                            <CheckValue
+	                              value={item.demand}
+	                              unit={item.unit}
+	                              units={units}
+	                            />
+	                          </div>
+	                        </div>
+	                        <div>
+	                          <div className="text-muted-foreground">Capacity</div>
+	                          <div className="font-medium">
+	                            <CheckValue
+	                              value={item.capacity}
+	                              unit={item.unit}
+	                              units={units}
+	                            />
+	                          </div>
+	                        </div>
                         <div>
                           <div className="text-muted-foreground">D/C</div>
                           <div className="font-medium">
@@ -1784,22 +2102,26 @@ export default function Home() {
                           <div className="text-muted-foreground">
                             Governing
                           </div>
-                          <div className="font-medium">
-                            {item.governingCase}
-                          </div>
+	                          <div className="font-medium">
+	                            <MathText>{item.governingCase}</MathText>
+	                          </div>
                         </div>
                       </div>
                       {item.details.length > 0 ? (
                         <div className="mt-2 space-y-0.5 text-[11px]/relaxed text-muted-foreground">
                           {item.details.map((detail) => (
-                            <div key={detail}>{detail}</div>
+                            <div key={detail}>
+                              <MathText>{detail}</MathText>
+                            </div>
                           ))}
                         </div>
                       ) : null}
                       {item.notes.length > 0 ? (
                         <div className="mt-2 space-y-0.5 text-[11px]/relaxed text-amber-700 dark:text-amber-300">
                           {item.notes.map((note) => (
-                            <div key={note}>{note}</div>
+                            <div key={note}>
+                              <MathText>{note}</MathText>
+                            </div>
                           ))}
                         </div>
                       ) : null}
@@ -1816,31 +2138,45 @@ export default function Home() {
                       <TableHeader>
                         <TableRow>
                           <TableHead className="border-r">Case</TableHead>
-                          <TableHead className="border-r text-right">
-                            qmax
-                          </TableHead>
-                          <TableHead className="border-r text-right">
-                            qmin
-                          </TableHead>
-                          <TableHead className="text-right">N</TableHead>
+	                          <TableHead className="border-r text-right">
+	                            <FormulaValue tex="q_{max}" />
+	                          </TableHead>
+	                          <TableHead className="border-r text-right">
+	                            <FormulaValue tex="q_{min}" />
+	                          </TableHead>
+	                          <TableHead className="text-right">
+	                            <FormulaValue tex="N" />
+	                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {designResults.serviceBearing.length > 0 ? (
                           designResults.serviceBearing.map((row) => (
                             <TableRow key={row.id}>
-                              <TableCell className="border-r">
-                                {row.name}
-                              </TableCell>
-                              <TableCell className="border-r text-right">
-                                {displayCheckValue(row.maxBearing, "kPa", units)}
-                              </TableCell>
-                              <TableCell className="border-r text-right">
-                                {displayCheckValue(row.minBearing, "kPa", units)}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {displayCheckValue(row.axial, "kN", units)}
-                              </TableCell>
+	                              <TableCell className="border-r">
+	                                <MathText>{row.name}</MathText>
+	                              </TableCell>
+	                              <TableCell className="border-r text-right">
+	                                <CheckValue
+	                                  value={row.maxBearing}
+	                                  unit="kPa"
+	                                  units={units}
+	                                />
+	                              </TableCell>
+	                              <TableCell className="border-r text-right">
+	                                <CheckValue
+	                                  value={row.minBearing}
+	                                  unit="kPa"
+	                                  units={units}
+	                                />
+	                              </TableCell>
+	                              <TableCell className="text-right">
+	                                <CheckValue
+	                                  value={row.axial}
+	                                  unit="kN"
+	                                  units={units}
+	                                />
+	                              </TableCell>
                             </TableRow>
                           ))
                         ) : (
@@ -1861,51 +2197,53 @@ export default function Home() {
                       <TableHeader>
                         <TableRow>
                           <TableHead className="border-r">Case</TableHead>
-                          <TableHead className="border-r text-right">
-                            qnet max
-                          </TableHead>
-                          <TableHead className="border-r text-right">
-                            Punching vu
-                          </TableHead>
-                          <TableHead className="text-right">Flex X/Z</TableHead>
+	                          <TableHead className="border-r text-right">
+	                            <FormulaValue tex="q_{net,max}" />
+	                          </TableHead>
+	                          <TableHead className="border-r text-right">
+	                            Punching <FormulaValue tex="v_u" />
+	                          </TableHead>
+	                          <TableHead className="text-right">
+	                            Flex <FormulaValue tex="M_x / M_z" />
+	                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {designResults.strengthCases.length > 0 ? (
                           designResults.strengthCases.map((row) => (
                             <TableRow key={row.id}>
-                              <TableCell className="border-r">
-                                {row.name}
-                              </TableCell>
-                              <TableCell className="border-r text-right">
-                                {displayCheckValue(
-                                  row.maxNetPressure,
-                                  "kPa",
-                                  units
-                                )}
-                              </TableCell>
-                              <TableCell className="border-r text-right">
-                                {displayCheckValue(
-                                  row.punchingStress,
-                                  "MPa",
-                                  units
-                                )}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {displayCheckValue(
-                                  row.flexureX,
-                                  "kN-m/m",
-                                  units,
-                                  2
-                                )}{" "}
-                                /{" "}
-                                {displayCheckValue(
-                                  row.flexureZ,
-                                  "kN-m/m",
-                                  units,
-                                  2
-                                )}
-                              </TableCell>
+	                              <TableCell className="border-r">
+	                                <MathText>{row.name}</MathText>
+	                              </TableCell>
+	                              <TableCell className="border-r text-right">
+	                                <CheckValue
+	                                  value={row.maxNetPressure}
+	                                  unit="kPa"
+	                                  units={units}
+	                                />
+	                              </TableCell>
+	                              <TableCell className="border-r text-right">
+	                                <CheckValue
+	                                  value={row.punchingStress}
+	                                  unit="MPa"
+	                                  units={units}
+	                                />
+	                              </TableCell>
+	                              <TableCell className="text-right">
+	                                <CheckValue
+	                                  value={row.flexureX}
+	                                  unit="kN-m/m"
+	                                  units={units}
+	                                  digits={2}
+	                                />{" "}
+	                                /{" "}
+	                                <CheckValue
+	                                  value={row.flexureZ}
+	                                  unit="kN-m/m"
+	                                  units={units}
+	                                  digits={2}
+	                                />
+	                              </TableCell>
                             </TableRow>
                           ))
                         ) : (
@@ -1933,62 +2271,88 @@ export default function Home() {
                 <div className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
                   <span className="text-muted-foreground">Model name</span>
                   <span className="font-medium">{modelName || "Untitled"}</span>
-                  <span className="text-muted-foreground">Footing plan</span>
-                  <span className="font-medium">
-                    {fmt(geometry.footingLength)} x {fmt(geometry.footingWidth)}{" "}
-                    {lengthUnit}
-                  </span>
+	                  <span className="text-muted-foreground">Footing plan</span>
+	                  <span className="font-medium">
+	                    <FormulaValue
+	                      tex={`${texNumber(geometry.footingLength)} \\times ${texNumber(
+	                        geometry.footingWidth
+	                      )}\\,${unitTex(lengthUnit)}`}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">
                     Footing concrete volume
                   </span>
-                  <span className="font-medium">
-                    {fmt(concreteVolume)} {lengthUnit}
-                    <sup>3</sup>
-                  </span>
+	                  <span className="font-medium">
+	                    <MathValue value={concreteVolume} unit={`${lengthUnit}³`} />
+	                  </span>
                   <span className="text-muted-foreground">
                     Pedestal footprint
                   </span>
-                  <span className="font-medium">
-                    {fmt(geometry.pedestalLength)} x{" "}
-                    {fmt(geometry.pedestalWidth)} {lengthUnit}
-                  </span>
+	                  <span className="font-medium">
+	                    <FormulaValue
+	                      tex={`${texNumber(geometry.pedestalLength)} \\times ${texNumber(
+	                        geometry.pedestalWidth
+	                      )}\\,${unitTex(lengthUnit)}`}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">
                     Pedestal offset
                   </span>
-                  <span className="font-medium">
-                    X {fmt(pedestalOffsetX)}, Z {fmt(pedestalOffsetZ)}{" "}
-                    {lengthUnit}
-                  </span>
+	                  <span className="font-medium">
+	                    <FormulaValue
+	                      tex={`x = ${texNumber(pedestalOffsetX)}\\,${unitTex(
+	                        lengthUnit
+	                      )},\\ z = ${texNumber(pedestalOffsetZ)}\\,${unitTex(
+	                        lengthUnit
+	                      )}`}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">
                     Concrete strength
                   </span>
-                  <span className="font-medium">
-                    {fmt(materials.concreteStrength)} {strengthUnit}
-                  </span>
+	                  <span className="font-medium">
+	                    <MathValue
+	                      value={materials.concreteStrength}
+	                      unit={strengthUnit}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">Rebar yield</span>
-                  <span className="font-medium">
-                    {fmt(materials.rebarYield)} {strengthUnit}
-                  </span>
+	                  <span className="font-medium">
+	                    <MathValue value={materials.rebarYield} unit={strengthUnit} />
+	                  </span>
                   <span className="text-muted-foreground">Clear cover</span>
-                  <span className="font-medium">
-                    {fmt(materials.clearCover)} {coverUnit}
-                  </span>
+	                  <span className="font-medium">
+	                    <MathValue value={materials.clearCover} unit={coverUnit} />
+	                  </span>
                   <span className="text-muted-foreground">
                     Allowable bearing
                   </span>
-                  <span className="font-medium">
-                    {fmt(materials.allowableBearing)} {bearingUnit}
-                  </span>
+	                  <span className="font-medium">
+	                    <MathValue
+	                      value={materials.allowableBearing}
+	                      unit={bearingUnit}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">X reinforcement</span>
-                  <span className="font-medium">
-                    {fmt(reinforcement.barDiameterX)} {coverUnit} @{" "}
-                    {fmt(reinforcement.barSpacingX)} {coverUnit}
-                  </span>
+	                  <span className="font-medium">
+	                    <FormulaValue
+	                      tex={`${texNumber(
+	                        reinforcement.barDiameterX
+	                      )}\\,${unitTex(coverUnit)}\\;@\\;${texNumber(
+	                        reinforcement.barSpacingX
+	                      )}\\,${unitTex(coverUnit)}`}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">Z reinforcement</span>
-                  <span className="font-medium">
-                    {fmt(reinforcement.barDiameterZ)} {coverUnit} @{" "}
-                    {fmt(reinforcement.barSpacingZ)} {coverUnit}
-                  </span>
+	                  <span className="font-medium">
+	                    <FormulaValue
+	                      tex={`${texNumber(
+	                        reinforcement.barDiameterZ
+	                      )}\\,${unitTex(coverUnit)}\\;@\\;${texNumber(
+	                        reinforcement.barSpacingZ
+	                      )}\\,${unitTex(coverUnit)}`}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">
                     Load cases
                   </span>
@@ -1997,23 +2361,23 @@ export default function Home() {
                     {activeStrengthLoadCases.length} strength
                   </span>
                   <span className="text-muted-foreground">Max compression</span>
-                  <span className="font-medium">
-                    {fmt(maxCompression)} {forceUnit}
-                  </span>
+	                  <span className="font-medium">
+	                    <MathValue value={maxCompression} unit={forceUnit} />
+	                  </span>
                   <span className="text-muted-foreground">Governing case</span>
-                  <span className="font-medium">
-                    {governingLoadCase}
-                  </span>
+	                  <span className="font-medium">
+	                    <MathText>{governingLoadCase}</MathText>
+	                  </span>
                   <span className="text-muted-foreground">
                     Max service bearing
                   </span>
-                  <span className="font-medium">
-                    {displayCheckValue(
-                      governingServiceBearing?.maxBearing ?? null,
-                      "kPa",
-                      units
-                    )}
-                  </span>
+	                  <span className="font-medium">
+	                    <CheckValue
+	                      value={governingServiceBearing?.maxBearing ?? null}
+	                      unit="kPa"
+	                      units={units}
+	                    />
+	                  </span>
                   <span className="text-muted-foreground">Overall status</span>
                   <span className="font-medium">
                     {statusLabel(designResults.summary.overallStatus)}
@@ -2047,9 +2411,14 @@ export default function Home() {
           </aside>
         </main>
 
-        <footer className="mx-auto max-w-7xl px-6 py-6 text-xs text-muted-foreground">
-          Isolated Footing Design · calculation engine active · verify load
-          combinations against selected code.
+        <footer className="mx-auto max-w-7xl space-y-1 px-6 py-6 text-xs text-muted-foreground">
+          <span>
+            Isolated Footing Design · calculation engine active · verify load
+            combinations against selected code.
+          </span>
+          <div>
+            {APP_DATE} · V.{APP_VERSION}
+          </div>
         </footer>
       </div>
     </TooltipProvider>

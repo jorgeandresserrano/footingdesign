@@ -60,6 +60,18 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Firebase Deployments
+
+Before every Firebase deployment requested by the user, verify and update the app’s displayed date and revision.
+
+Use a monotonically increasing whole-number revision format: `V.1`, `V.2`, `V.3`, etc. Do not use decimal or semantic-version formats such as `V.1.1`, `V.2.0`, or `1.0.0`.
+
+## 6. Inputs and Computed Values
+
+All Inputs or Computed values shown in value tables must be ordered alphabetically by column first. Greek and other non-Latin symbols are also sorted alphabetically, but listed at the end.
+
+All formulas and variables must use katex symbols.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
