@@ -1,7 +1,19 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Building2, Copy, Pencil, RotateCcw, Trash2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Building2,
+  CheckCircle2,
+  Copy,
+  Info,
+  MinusCircle,
+  Pencil,
+  RotateCcw,
+  Trash2,
+  X,
+  XCircle,
+} from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -9,6 +21,7 @@ import {
   type ClipboardEvent,
 } from "react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
@@ -32,10 +45,23 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { NumField } from "@/components/footing/NumField";
 import { TableOfContents } from "@/components/footing/TableOfContents";
 import type { FootingGeometry } from "@/components/footing/FootingModel3d";
+import {
+  calculateFootingDesign,
+  type CheckStatus,
+  type CheckUnit,
+  type DesignCheck,
+  type ReinforcementInputs as EngineReinforcementInputs,
+} from "@/lib/footingEngine";
 
 const FootingModel3d = dynamic(
   () =>
@@ -53,6 +79,19 @@ const FootingModel3d = dynamic(
 );
 
 type UnitSystem = "SI" | "USC";
+type BuildingCode =
+  | "IBC-2018"
+  | "IBC-2024"
+  | "NBCC-2015"
+  | "NBCC-2020"
+  | "NBCC-2025";
+type LoadStandard = "ASCE 7-16" | "ASCE 7-22" | "none";
+type ConcreteStandard =
+  | "ACI 318-14"
+  | "ACI 318-19"
+  | "CSA A23.3-14"
+  | "CSA A23.3-19"
+  | "CSA A23.3-24";
 
 const M_TO_FT = 3.28084;
 const MPA_TO_KSI = 0.1450377377;
@@ -61,6 +100,57 @@ const MM_TO_IN = 0.0393700787;
 const KPA_TO_KSF = 0.0208854342;
 const KN_TO_KIP = 0.2248089431;
 const KN_M_TO_KIP_FT = 0.7375621493;
+const KN_PER_M_TO_KIP_PER_FT = KN_TO_KIP / M_TO_FT;
+const KN_M_PER_M_TO_KIP_FT_PER_FT = KN_M_TO_KIP_FT / M_TO_FT;
+const MM2_PER_M_TO_IN2_PER_FT = 0.0015500031 / M_TO_FT;
+
+const BUILDING_CODE_OPTIONS: BuildingCode[] = [
+  "IBC-2018",
+  "IBC-2024",
+  "NBCC-2015",
+  "NBCC-2020",
+  "NBCC-2025",
+];
+
+const LOAD_STANDARD_OPTIONS: Array<{ value: LoadStandard; label: string }> = [
+  { value: "ASCE 7-16", label: "ASCE 7-16" },
+  { value: "ASCE 7-22", label: "ASCE 7-22" },
+  { value: "none", label: "Not used" },
+];
+
+const CONCRETE_STANDARD_OPTIONS: ConcreteStandard[] = [
+  "ACI 318-14",
+  "ACI 318-19",
+  "CSA A23.3-14",
+  "CSA A23.3-19",
+  "CSA A23.3-24",
+];
+
+const CODE_REFERENCES: Record<
+  BuildingCode,
+  { loadStandard: LoadStandard; concreteStandard: ConcreteStandard }
+> = {
+  "IBC-2018": {
+    loadStandard: "ASCE 7-16",
+    concreteStandard: "ACI 318-14",
+  },
+  "IBC-2024": {
+    loadStandard: "ASCE 7-22",
+    concreteStandard: "ACI 318-19",
+  },
+  "NBCC-2015": {
+    loadStandard: "none",
+    concreteStandard: "CSA A23.3-14",
+  },
+  "NBCC-2020": {
+    loadStandard: "none",
+    concreteStandard: "CSA A23.3-19",
+  },
+  "NBCC-2025": {
+    loadStandard: "none",
+    concreteStandard: "CSA A23.3-24",
+  },
+};
 
 interface MaterialInputs {
   concreteStrength: number;
@@ -68,6 +158,7 @@ interface MaterialInputs {
   concreteUnitWeight: number;
   clearCover: number;
   allowableBearing: number;
+  soilFrictionCoefficient: number;
 }
 
 interface LoadCase {
@@ -79,9 +170,21 @@ interface LoadCase {
   Mx: number;
   Mz: number;
   T: number;
+  foundationDeadLoadFactor: number;
 }
 
-type LoadCaseColumn = "name" | "P" | "Hx" | "Hz" | "Mx" | "Mz" | "T";
+type ReinforcementInputs = EngineReinforcementInputs;
+
+type LoadCombinationType = "service" | "strength";
+type LoadCaseColumn =
+  | "name"
+  | "P"
+  | "Hx"
+  | "Hz"
+  | "Mx"
+  | "Mz"
+  | "T"
+  | "foundationDeadLoadFactor";
 type CellPosition = { row: number; column: number };
 type SelectionRange = { start: CellPosition; end: CellPosition };
 
@@ -92,6 +195,8 @@ const DEFAULT_GEOMETRY_SI: FootingGeometry = {
   pedestalLength: 0.6,
   pedestalWidth: 0.6,
   pedestalHeight: 0.8,
+  pedestalOffsetX: 0,
+  pedestalOffsetZ: 0,
 };
 
 const DEFAULT_MATERIALS_SI: MaterialInputs = {
@@ -100,12 +205,20 @@ const DEFAULT_MATERIALS_SI: MaterialInputs = {
   concreteUnitWeight: 24,
   clearCover: 75,
   allowableBearing: 200,
+  soilFrictionCoefficient: 0.45,
+};
+
+const DEFAULT_REINFORCEMENT_SI: ReinforcementInputs = {
+  barDiameterX: 20,
+  barSpacingX: 200,
+  barDiameterZ: 20,
+  barSpacingZ: 200,
 };
 
 const LOAD_CASE_COLUMNS: Array<{
   key: LoadCaseColumn;
   label: string;
-  unitType: "text" | "force" | "moment";
+  unitType: "text" | "force" | "moment" | "factor";
 }> = [
   { key: "name", label: "Load case", unitType: "text" },
   { key: "P", label: "P", unitType: "force" },
@@ -114,6 +227,19 @@ const LOAD_CASE_COLUMNS: Array<{
   { key: "Mx", label: "Mx", unitType: "moment" },
   { key: "Mz", label: "Mz", unitType: "moment" },
   { key: "T", label: "T", unitType: "moment" },
+];
+
+const STRENGTH_LOAD_CASE_COLUMNS: Array<{
+  key: LoadCaseColumn;
+  label: string;
+  unitType: "text" | "force" | "moment" | "factor";
+}> = [
+  ...LOAD_CASE_COLUMNS,
+  {
+    key: "foundationDeadLoadFactor",
+    label: "Foundation D factor",
+    unitType: "factor",
+  },
 ];
 
 const DEFAULT_LOAD_CASES_SI: LoadCase[] = [
@@ -126,6 +252,7 @@ const DEFAULT_LOAD_CASES_SI: LoadCase[] = [
     Mx: 0,
     Mz: 0,
     T: 0,
+    foundationDeadLoadFactor: 1,
   },
   {
     id: "load-2",
@@ -136,10 +263,36 @@ const DEFAULT_LOAD_CASES_SI: LoadCase[] = [
     Mx: 80,
     Mz: 80,
     T: 0,
+    foundationDeadLoadFactor: 1,
   },
 ];
 
-function blankLoadCase(id: string): LoadCase {
+const DEFAULT_STRENGTH_LOAD_CASES_SI: LoadCase[] = [
+  {
+    id: "strength-load-1",
+    name: "1.4D",
+    P: 840,
+    Hx: 0,
+    Hz: 0,
+    Mx: 0,
+    Mz: 0,
+    T: 0,
+    foundationDeadLoadFactor: 1.4,
+  },
+  {
+    id: "strength-load-2",
+    name: "1.2D + 1.6L",
+    P: 1200,
+    Hx: 40,
+    Hz: 40,
+    Mx: 128,
+    Mz: 128,
+    T: 0,
+    foundationDeadLoadFactor: 1.2,
+  },
+];
+
+function blankLoadCase(id: string, foundationDeadLoadFactor = 1): LoadCase {
   return {
     id,
     name: "",
@@ -149,6 +302,7 @@ function blankLoadCase(id: string): LoadCase {
     Mx: 0,
     Mz: 0,
     T: 0,
+    foundationDeadLoadFactor,
   };
 }
 
@@ -169,7 +323,12 @@ function ensureTrailingBlank(loadCases: LoadCase[]) {
   while (next.length > 0 && isEmptyLoadCase(next[next.length - 1])) {
     next.pop();
   }
-  return [...next, blankLoadCase(`load-blank-${Date.now()}`)];
+  const foundationDeadLoadFactor =
+    next[next.length - 1]?.foundationDeadLoadFactor ?? 1;
+  return [
+    ...next,
+    blankLoadCase(`load-blank-${Date.now()}`, foundationDeadLoadFactor),
+  ];
 }
 
 function roundLength(value: number) {
@@ -194,6 +353,8 @@ function convertGeometry(
     pedestalLength: roundLength(geometry.pedestalLength * factor),
     pedestalWidth: roundLength(geometry.pedestalWidth * factor),
     pedestalHeight: roundLength(geometry.pedestalHeight * factor),
+    pedestalOffsetX: roundLength(geometry.pedestalOffsetX * factor),
+    pedestalOffsetZ: roundLength(geometry.pedestalOffsetZ * factor),
   };
 }
 
@@ -220,6 +381,22 @@ function convertMaterials(
     allowableBearing: roundMaterial(
       materials.allowableBearing * (toUsc ? KPA_TO_KSF : 1 / KPA_TO_KSF)
     ),
+    soilFrictionCoefficient: materials.soilFrictionCoefficient,
+  };
+}
+
+function convertReinforcement(
+  reinforcement: ReinforcementInputs,
+  from: UnitSystem,
+  to: UnitSystem
+): ReinforcementInputs {
+  if (from === to) return reinforcement;
+  const factor = from === "SI" ? MM_TO_IN : 1 / MM_TO_IN;
+  return {
+    barDiameterX: roundMaterial(reinforcement.barDiameterX * factor),
+    barSpacingX: roundMaterial(reinforcement.barSpacingX * factor),
+    barDiameterZ: roundMaterial(reinforcement.barDiameterZ * factor),
+    barSpacingZ: roundMaterial(reinforcement.barSpacingZ * factor),
   };
 }
 
@@ -257,10 +434,22 @@ function defaultMaterials(units: UnitSystem): MaterialInputs {
     : convertMaterials(DEFAULT_MATERIALS_SI, "SI", "USC");
 }
 
+function defaultReinforcement(units: UnitSystem): ReinforcementInputs {
+  return units === "SI"
+    ? DEFAULT_REINFORCEMENT_SI
+    : convertReinforcement(DEFAULT_REINFORCEMENT_SI, "SI", "USC");
+}
+
 function defaultLoadCases(units: UnitSystem): LoadCase[] {
   return units === "SI"
     ? ensureTrailingBlank(DEFAULT_LOAD_CASES_SI)
     : convertLoadCases(DEFAULT_LOAD_CASES_SI, "SI", "USC");
+}
+
+function defaultStrengthLoadCases(units: UnitSystem): LoadCase[] {
+  return units === "SI"
+    ? ensureTrailingBlank(DEFAULT_STRENGTH_LOAD_CASES_SI)
+    : convertLoadCases(DEFAULT_STRENGTH_LOAD_CASES_SI, "SI", "USC");
 }
 
 function fmt(value: number, digits = 3) {
@@ -269,15 +458,136 @@ function fmt(value: number, digits = 3) {
   }).format(value);
 }
 
+function statusLabel(status: CheckStatus) {
+  if (status === "pass") return "PASS";
+  if (status === "fail") return "FAIL";
+  if (status === "warning") return "Review";
+  return "N/A";
+}
+
+function StatusIcon({ status }: { status: CheckStatus }) {
+  if (status === "pass") return <CheckCircle2 className="size-3.5" />;
+  if (status === "fail") return <XCircle className="size-3.5" />;
+  if (status === "warning") return <AlertTriangle className="size-3.5" />;
+  return <MinusCircle className="size-3.5" />;
+}
+
+function StatusBadge({ status }: { status: CheckStatus }) {
+  const className =
+    status === "pass"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300"
+      : status === "fail"
+      ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+      : status === "warning"
+      ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300"
+      : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300";
+
+  return (
+    <Badge variant="outline" className={className}>
+      <StatusIcon status={status} />
+      {statusLabel(status)}
+    </Badge>
+  );
+}
+
+function convertedValue(value: number, unit: CheckUnit, units: UnitSystem) {
+  if (units === "SI") return value;
+  if (unit === "kPa") return value * KPA_TO_KSF;
+  if (unit === "kN") return value * KN_TO_KIP;
+  if (unit === "kN/m") return value * KN_PER_M_TO_KIP_PER_FT;
+  if (unit === "kN-m/m") return value * KN_M_PER_M_TO_KIP_FT_PER_FT;
+  if (unit === "MPa") return value * MPA_TO_KSI;
+  if (unit === "mm") return value * MM_TO_IN;
+  if (unit === "mm2/m") return value * MM2_PER_M_TO_IN2_PER_FT;
+  return value;
+}
+
+function displayUnit(unit: CheckUnit, units: UnitSystem) {
+  if (unit === "none") return "";
+  if (unit === "ratio") return "";
+  if (units === "SI") {
+    if (unit === "mm2/m") return "mm²/m";
+    if (unit === "kN-m/m") return "kN·m/m";
+    return unit;
+  }
+  if (unit === "kPa") return "ksf";
+  if (unit === "kN") return "kip";
+  if (unit === "kN/m") return "kip/ft";
+  if (unit === "kN-m/m") return "kip·ft/ft";
+  if (unit === "MPa") return "ksi";
+  if (unit === "mm") return "in";
+  if (unit === "mm2/m") return "in²/ft";
+  return unit;
+}
+
+function displayCheckValue(
+  value: number | null,
+  unit: CheckUnit,
+  units: UnitSystem,
+  digits = 3
+) {
+  if (value === null) return "N/A";
+  if (!Number.isFinite(value)) return "inf";
+  const nextValue = convertedValue(value, unit, units);
+  const nextUnit = displayUnit(unit, units);
+  return `${fmt(nextValue, digits)}${nextUnit ? ` ${nextUnit}` : ""}`;
+}
+
+function utilizationText(check: DesignCheck) {
+  if (check.utilization === null) return "N/A";
+  if (!Number.isFinite(check.utilization)) return "inf";
+  return fmt(check.utilization, 2);
+}
+
 function parseNumericCell(value: string) {
   const parsed = Number(value.trim().replace(/,/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function serializeLoadCases(loadCases: LoadCase[]) {
-  const header = LOAD_CASE_COLUMNS.map((column) => column.label).join("\t");
+function pedestalOffsetLimit(footingSize: number, pedestalSize: number) {
+  return Math.max((footingSize - pedestalSize) / 2, 0);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function finiteNumber(value: number, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function clampPedestalOffsets(geometry: FootingGeometry): FootingGeometry {
+  const limitX = pedestalOffsetLimit(
+    geometry.footingLength,
+    geometry.pedestalLength
+  );
+  const limitZ = pedestalOffsetLimit(
+    geometry.footingWidth,
+    geometry.pedestalWidth
+  );
+
+  return {
+    ...geometry,
+    pedestalOffsetX: clamp(
+      finiteNumber(geometry.pedestalOffsetX),
+      -limitX,
+      limitX
+    ),
+    pedestalOffsetZ: clamp(
+      finiteNumber(geometry.pedestalOffsetZ),
+      -limitZ,
+      limitZ
+    ),
+  };
+}
+
+function serializeLoadCases(
+  loadCases: LoadCase[],
+  columns: typeof LOAD_CASE_COLUMNS
+) {
+  const header = columns.map((column) => column.label).join("\t");
   const rows = loadCases.filter((loadCase) => !isEmptyLoadCase(loadCase)).map((loadCase) =>
-    LOAD_CASE_COLUMNS.map((column) =>
+    columns.map((column) =>
       column.key === "name" ? loadCase.name : String(loadCase[column.key])
     ).join("\t")
   );
@@ -293,7 +603,11 @@ function normalizedSelection(range: SelectionRange) {
   };
 }
 
-function serializeSelectedCells(loadCases: LoadCase[], range: SelectionRange) {
+function serializeSelectedCells(
+  loadCases: LoadCase[],
+  columns: typeof LOAD_CASE_COLUMNS,
+  range: SelectionRange
+) {
   const { rowStart, rowEnd, columnStart, columnEnd } =
     normalizedSelection(range);
   const rows: string[] = [];
@@ -306,7 +620,7 @@ function serializeSelectedCells(loadCases: LoadCase[], range: SelectionRange) {
       columnIndex <= columnEnd;
       columnIndex += 1
     ) {
-      const column = LOAD_CASE_COLUMNS[columnIndex];
+      const column = columns[columnIndex];
       if (!column) continue;
       cells.push(
         column.key === "name" ? loadCase.name : String(loadCase[column.key])
@@ -320,7 +634,14 @@ function serializeSelectedCells(loadCases: LoadCase[], range: SelectionRange) {
 export default function Home() {
   const [modelName, setModelName] = useState("Untitled footing");
   const [units, setUnits] = useState<UnitSystem>("SI");
+  const [buildingCode, setBuildingCode] = useState<BuildingCode>("IBC-2018");
+  const [loadStandard, setLoadStandard] =
+    useState<LoadStandard>("ASCE 7-16");
+  const [concreteStandard, setConcreteStandard] =
+    useState<ConcreteStandard>("ACI 318-14");
   const [loadTableOpen, setLoadTableOpen] = useState(false);
+  const [loadCombinationType, setLoadCombinationType] =
+    useState<LoadCombinationType>("service");
   const [isSelectingCells, setIsSelectingCells] = useState(false);
   const [selectedCells, setSelectedCells] = useState<SelectionRange | null>(
     null
@@ -331,9 +652,25 @@ export default function Home() {
   const [materials, setMaterials] = useState<MaterialInputs>(
     defaultMaterials("SI")
   );
-  const [loadCases, setLoadCases] = useState<LoadCase[]>(
+  const [reinforcement, setReinforcement] = useState<ReinforcementInputs>(
+    defaultReinforcement("SI")
+  );
+  const [serviceLoadCases, setServiceLoadCases] = useState<LoadCase[]>(
     defaultLoadCases("SI")
   );
+  const [strengthLoadCases, setStrengthLoadCases] = useState<LoadCase[]>(
+    defaultStrengthLoadCases("SI")
+  );
+  const loadCases =
+    loadCombinationType === "service" ? serviceLoadCases : strengthLoadCases;
+  const loadCaseColumns =
+    loadCombinationType === "service"
+      ? LOAD_CASE_COLUMNS
+      : STRENGTH_LOAD_CASE_COLUMNS;
+  const setCurrentLoadCases =
+    loadCombinationType === "service"
+      ? setServiceLoadCases
+      : setStrengthLoadCases;
 
   const lengthUnit = units === "SI" ? "m" : "ft";
   const strengthUnit = units === "SI" ? "MPa" : "ksi";
@@ -342,6 +679,16 @@ export default function Home() {
   const bearingUnit = units === "SI" ? "kPa" : "ksf";
   const forceUnit = units === "SI" ? "kN" : "kip";
   const momentUnit = units === "SI" ? "kN·m" : "kip·ft";
+  const pedestalOffsetX = finiteNumber(geometry.pedestalOffsetX);
+  const pedestalOffsetZ = finiteNumber(geometry.pedestalOffsetZ);
+  const pedestalOffsetLimitX = pedestalOffsetLimit(
+    geometry.footingLength,
+    geometry.pedestalLength
+  );
+  const pedestalOffsetLimitZ = pedestalOffsetLimit(
+    geometry.footingWidth,
+    geometry.pedestalWidth
+  );
   const concreteVolume = useMemo(
     () =>
       geometry.footingLength *
@@ -350,16 +697,82 @@ export default function Home() {
     [geometry]
   );
   const activeLoadCases = useMemo(
-    () => loadCases.filter((loadCase) => !isEmptyLoadCase(loadCase)),
-    [loadCases]
+    () => serviceLoadCases.filter((loadCase) => !isEmptyLoadCase(loadCase)),
+    [serviceLoadCases]
+  );
+  const activeStrengthLoadCases = useMemo(
+    () => strengthLoadCases.filter((loadCase) => !isEmptyLoadCase(loadCase)),
+    [strengthLoadCases]
   );
   const maxCompression = Math.max(
     0,
     ...activeLoadCases.map((loadCase) => loadCase.P)
   );
-  const maxDirectBearing =
-    maxCompression /
-    Math.max(geometry.footingLength * geometry.footingWidth, 1e-6);
+  const maxStrengthCompression = Math.max(
+    0,
+    ...activeStrengthLoadCases.map((loadCase) => loadCase.P)
+  );
+  const designResults = useMemo(() => {
+    const siGeometry =
+      units === "SI" ? geometry : convertGeometry(geometry, "USC", "SI");
+    const siMaterials =
+      units === "SI" ? materials : convertMaterials(materials, "USC", "SI");
+    const siReinforcement =
+      units === "SI"
+        ? reinforcement
+        : convertReinforcement(reinforcement, "USC", "SI");
+    const siServiceLoads =
+      units === "SI"
+        ? activeLoadCases
+        : convertLoadCases(activeLoadCases, "USC", "SI").filter(
+            (loadCase) => !isEmptyLoadCase(loadCase)
+          );
+    const siStrengthLoads =
+      units === "SI"
+        ? activeStrengthLoadCases
+        : convertLoadCases(activeStrengthLoadCases, "USC", "SI").filter(
+            (loadCase) => !isEmptyLoadCase(loadCase)
+          );
+
+    return calculateFootingDesign({
+      buildingCode,
+      loadStandard,
+      concreteStandard,
+      geometry: siGeometry,
+      materials: siMaterials,
+      reinforcement: siReinforcement,
+      serviceLoadCases: siServiceLoads,
+      strengthLoadCases: siStrengthLoads,
+    });
+  }, [
+    activeLoadCases,
+    activeStrengthLoadCases,
+    buildingCode,
+    concreteStandard,
+    geometry,
+    loadStandard,
+    materials,
+    reinforcement,
+    units,
+  ]);
+  const governingServiceBearing = designResults.serviceBearing.reduce<
+    (typeof designResults.serviceBearing)[number] | null
+  >(
+    (governing, result) =>
+      !governing || result.maxBearing > governing.maxBearing
+        ? result
+        : governing,
+    null
+  );
+  const governingStrengthCase = designResults.strengthCases.reduce<
+    (typeof designResults.strengthCases)[number] | null
+  >(
+    (governing, result) =>
+      !governing || result.maxNetPressure > governing.maxNetPressure
+        ? result
+        : governing,
+    null
+  );
   const governingLoadCase =
     activeLoadCases.find((loadCase) => loadCase.P === maxCompression)?.name ||
     "None";
@@ -372,11 +785,20 @@ export default function Home() {
   }, [isSelectingCells]);
 
   const updateGeometry = (key: keyof FootingGeometry, value: number) => {
-    setGeometry((current) => ({ ...current, [key]: value }));
+    setGeometry((current) =>
+      clampPedestalOffsets({ ...current, [key]: value })
+    );
   };
 
   const updateMaterials = (key: keyof MaterialInputs, value: number) => {
     setMaterials((current) => ({ ...current, [key]: value }));
+  };
+
+  const updateReinforcement = (
+    key: keyof ReinforcementInputs,
+    value: number
+  ) => {
+    setReinforcement((current) => ({ ...current, [key]: value }));
   };
 
   const updateLoadCase = (
@@ -384,7 +806,7 @@ export default function Home() {
     key: LoadCaseColumn,
     value: string
   ) => {
-    setLoadCases((current) =>
+    setCurrentLoadCases((current) =>
       ensureTrailingBlank(
         current.map((loadCase, index) =>
           index === rowIndex
@@ -399,7 +821,7 @@ export default function Home() {
   };
 
   const removeLoadCase = (rowIndex: number) => {
-    setLoadCases((current) =>
+    setCurrentLoadCases((current) =>
       ensureTrailingBlank(current.filter((_, index) => index !== rowIndex))
     );
   };
@@ -448,7 +870,7 @@ export default function Home() {
     const firstCell = rows[0]?.[0]?.trim().toLowerCase();
     const dataRows = firstCell === "load case" ? rows.slice(1) : rows;
 
-    setLoadCases((current) => {
+    setCurrentLoadCases((current) => {
       const next = [...current];
       dataRows.forEach((cells, rowOffset) => {
         const targetRow = startRow + rowOffset;
@@ -458,7 +880,7 @@ export default function Home() {
 
         const updated = { ...next[targetRow] };
         cells.forEach((cell, cellOffset) => {
-          const column = LOAD_CASE_COLUMNS[startColumn + cellOffset];
+          const column = loadCaseColumns[startColumn + cellOffset];
           if (!column) return;
           if (column.key === "name") updated.name = cell;
           else updated[column.key] = parseNumericCell(cell);
@@ -471,8 +893,8 @@ export default function Home() {
 
   const copyLoadCases = async () => {
     const text = selectedCells
-      ? serializeSelectedCells(loadCases, selectedCells)
-      : serializeLoadCases(loadCases);
+      ? serializeSelectedCells(loadCases, loadCaseColumns, selectedCells)
+      : serializeLoadCases(loadCases, loadCaseColumns);
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -492,21 +914,38 @@ export default function Home() {
     event.preventDefault();
     event.clipboardData.setData(
       "text/plain",
-      serializeSelectedCells(loadCases, selectedCells)
+      serializeSelectedCells(loadCases, loadCaseColumns, selectedCells)
     );
   };
 
   const switchUnits = (nextUnits: UnitSystem) => {
     setGeometry((current) => convertGeometry(current, units, nextUnits));
     setMaterials((current) => convertMaterials(current, units, nextUnits));
-    setLoadCases((current) => convertLoadCases(current, units, nextUnits));
+    setReinforcement((current) =>
+      convertReinforcement(current, units, nextUnits)
+    );
+    setServiceLoadCases((current) =>
+      convertLoadCases(current, units, nextUnits)
+    );
+    setStrengthLoadCases((current) =>
+      convertLoadCases(current, units, nextUnits)
+    );
     setUnits(nextUnits);
   };
 
   const resetInputs = () => {
     setGeometry(defaultGeometry(units));
     setMaterials(defaultMaterials(units));
-    setLoadCases(defaultLoadCases(units));
+    setReinforcement(defaultReinforcement(units));
+    setServiceLoadCases(defaultLoadCases(units));
+    setStrengthLoadCases(defaultStrengthLoadCases(units));
+  };
+
+  const updateBuildingCode = (nextBuildingCode: BuildingCode) => {
+    const references = CODE_REFERENCES[nextBuildingCode];
+    setBuildingCode(nextBuildingCode);
+    setLoadStandard(references.loadStandard);
+    setConcreteStandard(references.concreteStandard);
   };
 
   return (
@@ -549,6 +988,100 @@ export default function Home() {
                 >
                   <RotateCcw />
                 </Button>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">Code</span>
+                  <Select
+                    value={buildingCode}
+                    onValueChange={(value) =>
+                      updateBuildingCode(value as BuildingCode)
+                    }
+                  >
+                    <SelectTrigger size="sm" aria-label="Building code">
+                      <SelectValue>{(value) => value}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {BUILDING_CODE_OPTIONS.map((option) => (
+                        <SelectItem key={option} value={option}>
+                          {option}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">Loads</span>
+                  <Select
+                    value={loadStandard}
+                    onValueChange={(value) => {
+                      const nextLoadStandard = value as LoadStandard;
+                      if (
+                        nextLoadStandard ===
+                        CODE_REFERENCES[buildingCode].loadStandard
+                      ) {
+                        setLoadStandard(nextLoadStandard);
+                      }
+                    }}
+                  >
+                    <SelectTrigger size="sm" aria-label="Load standard">
+                      <SelectValue>
+                        {(value) =>
+                          LOAD_STANDARD_OPTIONS.find(
+                            (option) => option.value === value
+                          )?.label
+                        }
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LOAD_STANDARD_OPTIONS.map((option) => (
+                        <SelectItem
+                          key={option.value}
+                          value={option.value}
+                          disabled={
+                            option.value !==
+                            CODE_REFERENCES[buildingCode].loadStandard
+                          }
+                        >
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">
+                    Concrete
+                  </span>
+                  <Select
+                    value={concreteStandard}
+                    onValueChange={(value) => {
+                      const nextConcreteStandard = value as ConcreteStandard;
+                      if (
+                        nextConcreteStandard ===
+                        CODE_REFERENCES[buildingCode].concreteStandard
+                      ) {
+                        setConcreteStandard(nextConcreteStandard);
+                      }
+                    }}
+                  >
+                    <SelectTrigger size="sm" aria-label="Concrete code">
+                      <SelectValue>{(value) => value}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CONCRETE_STANDARD_OPTIONS.map((option) => (
+                        <SelectItem
+                          key={option}
+                          value={option}
+                          disabled={
+                            option !==
+                            CODE_REFERENCES[buildingCode].concreteStandard
+                          }
+                        >
+                          {option}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <Select
                   value={units}
                   onValueChange={(value) => switchUnits(value as UnitSystem)}
@@ -607,95 +1140,123 @@ export default function Home() {
                 className="min-h-0 flex-1 overflow-auto p-5"
                 onCopy={copySelectedCells}
               >
-                <Table className="min-w-[760px] border">
-                  <TableHeader>
-                    <TableRow>
-                      {LOAD_CASE_COLUMNS.map((column) => (
-                        <TableHead key={column.key} className="border-r">
-                          <div className="space-y-0.5">
-                            <div>{column.label}</div>
-                            {column.unitType !== "text" ? (
-                              <div className="text-[10px] font-normal text-muted-foreground">
-                                {column.unitType === "force"
-                                  ? forceUnit
-                                  : momentUnit}
+                <Tabs
+                  value={loadCombinationType}
+                  onValueChange={(value) => {
+                    setLoadCombinationType(value as LoadCombinationType);
+                    setSelectedCells(null);
+                  }}
+                  className="gap-4"
+                >
+                  <TabsList>
+                    <TabsTrigger value="service">Service / stability</TabsTrigger>
+                    <TabsTrigger value="strength">Strength</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value={loadCombinationType}>
+                    <Table
+                      className={`border ${
+                        loadCombinationType === "strength"
+                          ? "min-w-[980px]"
+                          : "min-w-[760px]"
+                      }`}
+                    >
+                      <TableHeader>
+                        <TableRow>
+                          {loadCaseColumns.map((column) => (
+                            <TableHead key={column.key} className="border-r">
+                              <div className="space-y-0.5">
+                                <div>{column.label}</div>
+                                {column.unitType !== "text" &&
+                                column.unitType !== "factor" ? (
+                                  <div className="text-[10px] font-normal text-muted-foreground">
+                                    {column.unitType === "force"
+                                      ? forceUnit
+                                      : momentUnit}
+                                  </div>
+                                ) : null}
                               </div>
-                            ) : null}
-                          </div>
-                        </TableHead>
-                      ))}
-                      <TableHead className="w-12" />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {loadCases.map((loadCase, rowIndex) => (
-                      <TableRow key={loadCase.id}>
-                        {LOAD_CASE_COLUMNS.map((column, columnIndex) => {
-                          const isEmptyRow = isEmptyLoadCase(loadCase);
-                          const selected = isCellSelected(
-                            rowIndex,
-                            columnIndex
-                          );
-                          const value =
-                            isEmptyRow
-                              ? ""
-                              : column.key === "name"
-                              ? loadCase.name
-                              : String(loadCase[column.key]);
-                          return (
-                            <TableCell
-                              key={column.key}
-                              className={`border-r p-0 ${
-                                selected
-                                  ? "bg-blue-100 ring-1 ring-inset ring-blue-500 dark:bg-blue-950"
-                                  : ""
-                              }`}
-                              onMouseDown={() =>
-                                startCellSelection(rowIndex, columnIndex)
-                              }
-                              onMouseEnter={() =>
-                                extendCellSelection(rowIndex, columnIndex)
-                              }
-                            >
-                              <input
-                                aria-label={`${column.label} row ${
-                                  rowIndex + 1
-                                }`}
-                                value={value}
-                                inputMode={
-                                  column.key === "name" ? "text" : "decimal"
-                                }
-                                onChange={(event) =>
-                                  updateLoadCase(
-                                    rowIndex,
-                                    column.key,
-                                    event.target.value
-                                  )
-                                }
-                                onPaste={(event) =>
-                                  pasteLoadCases(event, rowIndex, columnIndex)
-                                }
-                                className="h-9 w-full min-w-0 bg-transparent px-2 text-sm outline-none focus:bg-blue-50 dark:focus:bg-slate-800"
-                              />
+                            </TableHead>
+                          ))}
+                          <TableHead className="w-12" />
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {loadCases.map((loadCase, rowIndex) => (
+                          <TableRow key={loadCase.id}>
+                            {loadCaseColumns.map((column, columnIndex) => {
+                              const isEmptyRow = isEmptyLoadCase(loadCase);
+                              const selected = isCellSelected(
+                                rowIndex,
+                                columnIndex
+                              );
+                              const value =
+                                isEmptyRow
+                                  ? ""
+                                  : column.key === "name"
+                                  ? loadCase.name
+                                  : String(loadCase[column.key]);
+                              return (
+                                <TableCell
+                                  key={column.key}
+                                  className={`border-r p-0 ${
+                                    selected
+                                      ? "bg-blue-100 ring-1 ring-inset ring-blue-500 dark:bg-blue-950"
+                                      : ""
+                                  }`}
+                                  onMouseDown={() =>
+                                    startCellSelection(rowIndex, columnIndex)
+                                  }
+                                  onMouseEnter={() =>
+                                    extendCellSelection(rowIndex, columnIndex)
+                                  }
+                                >
+                                  <input
+                                    aria-label={`${column.label} row ${
+                                      rowIndex + 1
+                                    }`}
+                                    value={value}
+                                    inputMode={
+                                      column.key === "name"
+                                        ? "text"
+                                        : "decimal"
+                                    }
+                                    onChange={(event) =>
+                                      updateLoadCase(
+                                        rowIndex,
+                                        column.key,
+                                        event.target.value
+                                      )
+                                    }
+                                    onPaste={(event) =>
+                                      pasteLoadCases(
+                                        event,
+                                        rowIndex,
+                                        columnIndex
+                                      )
+                                    }
+                                    className="h-9 w-full min-w-0 bg-transparent px-2 text-sm outline-none focus:bg-blue-50 dark:focus:bg-slate-800"
+                                  />
+                                </TableCell>
+                              );
+                            })}
+                            <TableCell className="p-1 text-right">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => removeLoadCase(rowIndex)}
+                                disabled={isEmptyLoadCase(loadCase)}
+                                aria-label={`Remove load case ${rowIndex + 1}`}
+                              >
+                                <Trash2 />
+                              </Button>
                             </TableCell>
-                          );
-                        })}
-                        <TableCell className="p-1 text-right">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => removeLoadCase(rowIndex)}
-                            disabled={isEmptyLoadCase(loadCase)}
-                            aria-label={`Remove load case ${rowIndex + 1}`}
-                          >
-                            <Trash2 />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TabsContent>
+                </Tabs>
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-3 border-t px-5 py-4">
@@ -732,10 +1293,10 @@ export default function Home() {
               <CardHeader>
                 <CardTitle>Geometry</CardTitle>
                 <CardDescription>
-                  Footing slab and centered pedestal footprint dimensions.
+                  Footing slab and pedestal footprint dimensions.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <NumField
                   id="footingLength"
                   label="Footing length"
@@ -752,7 +1313,7 @@ export default function Home() {
                   value={geometry.footingWidth}
                   min={0.05}
                   onChange={(value) => updateGeometry("footingWidth", value)}
-                  tooltip="Plan dimension of footing in model Y direction."
+                  tooltip="Plan dimension of footing in model Z direction."
                 />
                 <NumField
                   id="footingThickness"
@@ -790,7 +1351,27 @@ export default function Home() {
                   value={geometry.pedestalHeight}
                   min={0.05}
                   onChange={(value) => updateGeometry("pedestalHeight", value)}
-                  tooltip="Visual height only. Pedestal design is outside this footing-only scope."
+                  tooltip="Height from footing top to load application. Pedestal design is outside this footing-only scope."
+                />
+                <NumField
+                  id="pedestalOffsetX"
+                  label="Pedestal offset X"
+                  unit={lengthUnit}
+                  value={pedestalOffsetX}
+                  min={-pedestalOffsetLimitX}
+                  max={pedestalOffsetLimitX}
+                  onChange={(value) => updateGeometry("pedestalOffsetX", value)}
+                  tooltip="Offset from footing center. Positive X follows the red plan axis."
+                />
+                <NumField
+                  id="pedestalOffsetZ"
+                  label="Pedestal offset Z"
+                  unit={lengthUnit}
+                  value={pedestalOffsetZ}
+                  min={-pedestalOffsetLimitZ}
+                  max={pedestalOffsetLimitZ}
+                  onChange={(value) => updateGeometry("pedestalOffsetZ", value)}
+                  tooltip="Offset from footing center. Positive Z follows the blue plan axis."
                 />
               </CardContent>
             </Card>
@@ -854,12 +1435,100 @@ export default function Home() {
                   }
                   tooltip="Service-level allowable soil bearing pressure for footing checks."
                 />
+                <NumField
+                  id="soilFrictionCoefficient"
+                  label="Soil friction coefficient"
+                  value={materials.soilFrictionCoefficient}
+                  min={0}
+                  max={2}
+                  step={0.01}
+                  onChange={(value) =>
+                    updateMaterials("soilFrictionCoefficient", value)
+                  }
+                  tooltip="Coefficient used for friction-only service sliding check. Passive resistance is not included."
+                />
+              </CardContent>
+            </Card>
+
+            <Card id="card-reinforcement">
+              <CardHeader>
+                <CardTitle>Reinforcement</CardTitle>
+                <CardDescription>
+                  Bottom mat used for flexure and minimum steel checks.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <NumField
+                  id="barDiameterX"
+                  label="X bar diameter"
+                  unit={coverUnit}
+                  value={reinforcement.barDiameterX}
+                  min={0.1}
+                  onChange={(value) =>
+                    updateReinforcement("barDiameterX", value)
+                  }
+                  tooltip="Bars parallel to X. Used for footing projection beyond pedestal side faces in X."
+                />
+                <NumField
+                  id="barSpacingX"
+                  label="X bar spacing"
+                  unit={coverUnit}
+                  value={reinforcement.barSpacingX}
+                  min={0.1}
+                  onChange={(value) =>
+                    updateReinforcement("barSpacingX", value)
+                  }
+                  tooltip="Center-to-center spacing of bottom bars parallel to X."
+                />
+                <NumField
+                  id="barDiameterZ"
+                  label="Z bar diameter"
+                  unit={coverUnit}
+                  value={reinforcement.barDiameterZ}
+                  min={0.1}
+                  onChange={(value) =>
+                    updateReinforcement("barDiameterZ", value)
+                  }
+                  tooltip="Bars parallel to Z. Used for footing projection beyond pedestal side faces in Z."
+                />
+                <NumField
+                  id="barSpacingZ"
+                  label="Z bar spacing"
+                  unit={coverUnit}
+                  value={reinforcement.barSpacingZ}
+                  min={0.1}
+                  onChange={(value) =>
+                    updateReinforcement("barSpacingZ", value)
+                  }
+                  tooltip="Center-to-center spacing of bottom bars parallel to Z."
+                />
               </CardContent>
             </Card>
 
             <Card id="card-loads">
               <CardHeader>
-                <CardTitle>Loads</CardTitle>
+                <div className="flex items-center gap-1.5">
+                  <CardTitle>Loads</CardTitle>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-foreground"
+                          aria-label="How foundation weight is considered"
+                        >
+                          <Info size={14} />
+                        </button>
+                      }
+                    />
+                    <TooltipContent className="max-w-sm text-xs">
+                      Foundation weight is computed from footing concrete volume
+                      and concrete unit weight. Service/stability combinations
+                      use a 1.0 dead-load factor. Strength combinations use the
+                      per-row Foundation D factor.
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <CardDescription>
                   Load cases applied at the top of the pedestal.
                 </CardDescription>
@@ -867,9 +1536,17 @@ export default function Home() {
               <CardContent className="space-y-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:min-w-80">
-                    <span className="text-muted-foreground">Load cases</span>
+                    <span className="text-muted-foreground">
+                      Service combos
+                    </span>
                     <span className="text-right font-medium">
                       {activeLoadCases.length}
+                    </span>
+                    <span className="text-muted-foreground">
+                      Strength combos
+                    </span>
+                    <span className="text-right font-medium">
+                      {activeStrengthLoadCases.length}
                     </span>
                     <span className="text-muted-foreground">
                       Max compression
@@ -878,10 +1555,22 @@ export default function Home() {
                       {fmt(maxCompression)} {forceUnit}
                     </span>
                     <span className="text-muted-foreground">
+                      Max strength P
+                    </span>
+                    <span className="text-right font-medium">
+                      {fmt(maxStrengthCompression)} {forceUnit}
+                    </span>
+                    <span className="text-muted-foreground">
                       Governing case
                     </span>
                     <span className="text-right font-medium">
                       {governingLoadCase}
+                    </span>
+                    <span className="text-muted-foreground">
+                      Bearing case
+                    </span>
+                    <span className="text-right font-medium">
+                      {governingServiceBearing?.name || "None"}
                     </span>
                   </div>
                   <Button type="button" onClick={() => setLoadTableOpen(true)}>
@@ -891,32 +1580,345 @@ export default function Home() {
                 <Separator />
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                   <span className="text-muted-foreground">
-                    Direct bearing from max P
+                    Footing self-weight
                   </span>
                   <span className="text-right font-medium">
-                    {fmt(maxDirectBearing)} {bearingUnit}
+                    {displayCheckValue(
+                      designResults.summary.footingSelfWeight,
+                      "kN",
+                      units
+                    )}
+                  </span>
+                  <span className="text-muted-foreground">
+                    Max service bearing
+                  </span>
+                  <span className="text-right font-medium">
+                    {displayCheckValue(
+                      governingServiceBearing?.maxBearing ?? null,
+                      "kPa",
+                      units
+                    )}
+                  </span>
+                  <span className="text-muted-foreground">
+                    Min service bearing
+                  </span>
+                  <span className="text-right font-medium">
+                    {displayCheckValue(
+                      governingServiceBearing?.minBearing ?? null,
+                      "kPa",
+                      units
+                    )}
+                  </span>
+                  <span className="text-muted-foreground">
+                    Max strength net pressure
+                  </span>
+                  <span className="text-right font-medium">
+                    {displayCheckValue(
+                      governingStrengthCase?.maxNetPressure ?? null,
+                      "kPa",
+                      units
+                    )}
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Table columns are Load case, P, Hx, Hz, Mx, Mz, and T. Values
-                  are at top of pedestal and can be pasted from Excel.
+                  are at top of pedestal. Selected code controls concrete
+                  factors; load combinations must match {loadStandard}.
                 </p>
               </CardContent>
             </Card>
 
-            <Card id="card-design-checks" className="bg-[#d8f3e5]">
+            <Card id="card-design-checks">
               <CardHeader>
-                <CardTitle>Design checks</CardTitle>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <CardTitle>Design checks</CardTitle>
+                  <StatusBadge status={designResults.summary.overallStatus} />
+                </div>
                 <CardDescription>
-                  Code checks are intentionally not implemented in this first UI
-                  pass.
+                  {buildingCode} with {loadStandard === "none" ? "NBCC load combinations" : loadStandard} and{" "}
+                  {concreteStandard}. Results below expose basis, demand,
+                  capacity, utilization, and governing case.
                 </CardDescription>
               </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  Future checks: bearing pressure, one-way shear, punching shear,
-                  flexure, and footing reinforcement.
-                </p>
+              <CardContent className="space-y-5">
+                <div className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
+                    <div className="text-xs text-muted-foreground">
+                      Effective depth X / Z
+                    </div>
+                    <div className="mt-1 space-y-0.5 font-medium">
+                      <div>
+                        X{" "}
+                        {displayCheckValue(
+                          designResults.summary.effectiveDepthX,
+                          "mm",
+                          units
+                        )}
+                      </div>
+                      <div>
+                        Z{" "}
+                        {displayCheckValue(
+                          designResults.summary.effectiveDepthZ,
+                          "mm",
+                          units
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
+                    <div className="text-xs text-muted-foreground">
+                      Provided As X / Z
+                    </div>
+                    <div className="mt-1 space-y-0.5 font-medium">
+                      <div>
+                        X{" "}
+                        {displayCheckValue(
+                          designResults.summary.providedAsX,
+                          "mm2/m",
+                          units,
+                          0
+                        )}
+                      </div>
+                      <div>
+                        Z{" "}
+                        {displayCheckValue(
+                          designResults.summary.providedAsZ,
+                          "mm2/m",
+                          units,
+                          0
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
+                    <div className="text-xs text-muted-foreground">
+                      Minimum As X / Z
+                    </div>
+                    <div className="mt-1 space-y-0.5 font-medium">
+                      <div>
+                        X{" "}
+                        {displayCheckValue(
+                          designResults.summary.minimumAsX,
+                          "mm2/m",
+                          units,
+                          0
+                        )}
+                      </div>
+                      <div>
+                        Z{" "}
+                        {displayCheckValue(
+                          designResults.summary.minimumAsZ,
+                          "mm2/m",
+                          units,
+                          0
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
+                    <div className="text-xs text-muted-foreground">
+                      Concrete design family
+                    </div>
+                    <div className="mt-1 font-medium">
+                      {designResults.codeBasis.concreteFamily}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 text-xs text-muted-foreground lg:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <div className="font-medium text-foreground">
+                      Code basis
+                    </div>
+                    {designResults.codeBasis.references.map((reference) => (
+                      <div key={reference}>{reference}</div>
+                    ))}
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="font-medium text-foreground">
+                      Analysis assumptions
+                    </div>
+                    {designResults.codeBasis.assumptions.map((assumption) => (
+                      <div key={assumption}>{assumption}</div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {designResults.checks.map((item) => (
+                    <div
+                      key={item.id}
+                      className="relative rounded-md border bg-white p-3 dark:bg-slate-950"
+                    >
+                      <div className="pr-24">
+                        <div className="min-w-0">
+                          <div className="font-medium">{item.label}</div>
+                          <div className="mt-1 text-[11px]/relaxed text-muted-foreground">
+                            {item.basis}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="absolute right-3 top-3">
+                        <StatusBadge status={item.status} />
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                        <div>
+                          <div className="text-muted-foreground">Demand</div>
+                          <div className="font-medium">
+                            {displayCheckValue(item.demand, item.unit, units)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">Capacity</div>
+                          <div className="font-medium">
+                            {displayCheckValue(item.capacity, item.unit, units)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">D/C</div>
+                          <div className="font-medium">
+                            {utilizationText(item)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">
+                            Governing
+                          </div>
+                          <div className="font-medium">
+                            {item.governingCase}
+                          </div>
+                        </div>
+                      </div>
+                      {item.details.length > 0 ? (
+                        <div className="mt-2 space-y-0.5 text-[11px]/relaxed text-muted-foreground">
+                          {item.details.map((detail) => (
+                            <div key={detail}>{detail}</div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {item.notes.length > 0 ? (
+                        <div className="mt-2 space-y-0.5 text-[11px]/relaxed text-amber-700 dark:text-amber-300">
+                          {item.notes.map((note) => (
+                            <div key={note}>{note}</div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">
+                      Service bearing by case
+                    </div>
+                    <Table className="border">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="border-r">Case</TableHead>
+                          <TableHead className="border-r text-right">
+                            qmax
+                          </TableHead>
+                          <TableHead className="border-r text-right">
+                            qmin
+                          </TableHead>
+                          <TableHead className="text-right">N</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {designResults.serviceBearing.length > 0 ? (
+                          designResults.serviceBearing.map((row) => (
+                            <TableRow key={row.id}>
+                              <TableCell className="border-r">
+                                {row.name}
+                              </TableCell>
+                              <TableCell className="border-r text-right">
+                                {displayCheckValue(row.maxBearing, "kPa", units)}
+                              </TableCell>
+                              <TableCell className="border-r text-right">
+                                {displayCheckValue(row.minBearing, "kPa", units)}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {displayCheckValue(row.axial, "kN", units)}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={4} className="text-muted-foreground">
+                              No service cases.
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">
+                      Strength actions by case
+                    </div>
+                    <Table className="border">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="border-r">Case</TableHead>
+                          <TableHead className="border-r text-right">
+                            qnet max
+                          </TableHead>
+                          <TableHead className="border-r text-right">
+                            Punching vu
+                          </TableHead>
+                          <TableHead className="text-right">Flex X/Z</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {designResults.strengthCases.length > 0 ? (
+                          designResults.strengthCases.map((row) => (
+                            <TableRow key={row.id}>
+                              <TableCell className="border-r">
+                                {row.name}
+                              </TableCell>
+                              <TableCell className="border-r text-right">
+                                {displayCheckValue(
+                                  row.maxNetPressure,
+                                  "kPa",
+                                  units
+                                )}
+                              </TableCell>
+                              <TableCell className="border-r text-right">
+                                {displayCheckValue(
+                                  row.punchingStress,
+                                  "MPa",
+                                  units
+                                )}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {displayCheckValue(
+                                  row.flexureX,
+                                  "kN-m/m",
+                                  units,
+                                  2
+                                )}{" "}
+                                /{" "}
+                                {displayCheckValue(
+                                  row.flexureZ,
+                                  "kN-m/m",
+                                  units,
+                                  2
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={4} className="text-muted-foreground">
+                              No strength cases.
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
               </CardContent>
             </Card>
 
@@ -951,6 +1953,13 @@ export default function Home() {
                     {fmt(geometry.pedestalWidth)} {lengthUnit}
                   </span>
                   <span className="text-muted-foreground">
+                    Pedestal offset
+                  </span>
+                  <span className="font-medium">
+                    X {fmt(pedestalOffsetX)}, Z {fmt(pedestalOffsetZ)}{" "}
+                    {lengthUnit}
+                  </span>
+                  <span className="text-muted-foreground">
                     Concrete strength
                   </span>
                   <span className="font-medium">
@@ -970,11 +1979,22 @@ export default function Home() {
                   <span className="font-medium">
                     {fmt(materials.allowableBearing)} {bearingUnit}
                   </span>
+                  <span className="text-muted-foreground">X reinforcement</span>
+                  <span className="font-medium">
+                    {fmt(reinforcement.barDiameterX)} {coverUnit} @{" "}
+                    {fmt(reinforcement.barSpacingX)} {coverUnit}
+                  </span>
+                  <span className="text-muted-foreground">Z reinforcement</span>
+                  <span className="font-medium">
+                    {fmt(reinforcement.barDiameterZ)} {coverUnit} @{" "}
+                    {fmt(reinforcement.barSpacingZ)} {coverUnit}
+                  </span>
                   <span className="text-muted-foreground">
                     Load cases
                   </span>
                   <span className="font-medium">
-                    {activeLoadCases.length}
+                    {activeLoadCases.length} service /{" "}
+                    {activeStrengthLoadCases.length} strength
                   </span>
                   <span className="text-muted-foreground">Max compression</span>
                   <span className="font-medium">
@@ -984,11 +2004,25 @@ export default function Home() {
                   <span className="font-medium">
                     {governingLoadCase}
                   </span>
+                  <span className="text-muted-foreground">
+                    Max service bearing
+                  </span>
+                  <span className="font-medium">
+                    {displayCheckValue(
+                      governingServiceBearing?.maxBearing ?? null,
+                      "kPa",
+                      units
+                    )}
+                  </span>
+                  <span className="text-muted-foreground">Overall status</span>
+                  <span className="font-medium">
+                    {statusLabel(designResults.summary.overallStatus)}
+                  </span>
                 </div>
                 <Separator />
                 <p className="text-xs text-muted-foreground">
-                  Values are geometric only. Structural design checks are not
-                  active yet.
+                  Values feed the calculation engine shown in Design checks.
+                  Service/stability and strength cases are separate by design.
                 </p>
               </CardContent>
             </Card>
@@ -1003,7 +2037,7 @@ export default function Home() {
               <CardHeader className="gap-0.5">
                 <CardTitle>3D model</CardTitle>
                 <CardDescription className="text-[11px]/snug">
-                  Rotatable footing slab with centered pedestal footprint.
+                  Rotatable footing slab with pedestal footprint.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -1014,7 +2048,8 @@ export default function Home() {
         </main>
 
         <footer className="mx-auto max-w-7xl px-6 py-6 text-xs text-muted-foreground">
-          Isolated Footing Design · UI preview only · Design checks to follow.
+          Isolated Footing Design · calculation engine active · verify load
+          combinations against selected code.
         </footer>
       </div>
     </TooltipProvider>

@@ -6,6 +6,7 @@ import { ArrowUp } from "lucide-react";
 const SECTIONS = [
   { id: "card-geometry", label: "Geometry" },
   { id: "card-materials", label: "Materials" },
+  { id: "card-reinforcement", label: "Reinforcement" },
   { id: "card-loads", label: "Loads" },
   { id: "card-design-checks", label: "Design checks" },
   { id: "card-values", label: "Values" },

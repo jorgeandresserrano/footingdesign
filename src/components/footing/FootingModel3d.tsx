@@ -29,6 +29,8 @@ export interface FootingGeometry {
   pedestalLength: number;
   pedestalWidth: number;
   pedestalHeight: number;
+  pedestalOffsetX: number;
+  pedestalOffsetZ: number;
 }
 
 interface Props {
@@ -37,6 +39,10 @@ interface Props {
 
 function clampDimension(value: number) {
   return Math.max(value, 0.05);
+}
+
+function finiteNumber(value: number, fallback = 0) {
+  return Number.isFinite(value) ? value : fallback;
 }
 
 function getCameraDistance({
@@ -146,11 +152,25 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
   const pedestalLength = clampDimension(geometry.pedestalLength);
   const pedestalWidth = clampDimension(geometry.pedestalWidth);
   const pedestalHeight = clampDimension(geometry.pedestalHeight);
-  const modelSpan = Math.max(footingLength, footingWidth, pedestalHeight);
+  const pedestalOffsetX = finiteNumber(geometry.pedestalOffsetX);
+  const pedestalOffsetZ = finiteNumber(geometry.pedestalOffsetZ);
+  const minX = Math.min(
+    -footingLength / 2,
+    pedestalOffsetX - pedestalLength / 2
+  );
+  const maxX = Math.max(
+    footingLength / 2,
+    pedestalOffsetX + pedestalLength / 2
+  );
+  const minZ = Math.min(-footingWidth / 2, pedestalOffsetZ - pedestalWidth / 2);
+  const maxZ = Math.max(footingWidth / 2, pedestalOffsetZ + pedestalWidth / 2);
+  const modelLength = maxX - minX;
+  const modelWidth = maxZ - minZ;
+  const modelSpan = Math.max(modelLength, modelWidth, pedestalHeight);
   const modelHeight = footingThickness + pedestalHeight;
   const lockedZoomDistance = getCameraDistance({
-    modelLength: footingLength,
-    modelWidth: footingWidth,
+    modelLength,
+    modelWidth,
     modelHeight,
     aspect: size.width / size.height,
   });
@@ -194,13 +214,17 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
         <mesh
           castShadow
           receiveShadow
-          position={[0, footingThickness + pedestalHeight / 2, 0]}
+          position={[
+            pedestalOffsetX,
+            footingThickness + pedestalHeight / 2,
+            pedestalOffsetZ,
+          ]}
         >
           <boxGeometry args={[pedestalLength, pedestalHeight, pedestalWidth]} />
           <meshStandardMaterial color="#d2d0ca" roughness={0.74} />
         </mesh>
       </group>
-      <group position={[0, axisOriginY, 0]}>
+      <group position={[pedestalOffsetX, axisOriginY, pedestalOffsetZ]}>
         <AxisArrow
           color="#dc2626"
           length={axisLength}

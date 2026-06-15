@@ -35,6 +35,17 @@ export function NumField({
 }: Props) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState("");
+  const allowNegative = min < 0;
+  const fallbackValue =
+    min <= 0 && (max === undefined || max >= 0) ? 0 : min;
+
+  const updateDraftValue = (rawValue: string) => {
+    const nextDraft = allowNegative ? rawValue : rawValue.replace(/-/g, "");
+    const nextValue = Number(nextDraft);
+    setDraft(nextDraft);
+    if (nextDraft.trim() === "") onChange(fallbackValue);
+    else if (Number.isFinite(nextValue)) onChange(nextValue);
+  };
 
   return (
     <div className="flex h-full flex-col space-y-1.5">
@@ -74,20 +85,15 @@ export function NumField({
             setFocused(true);
           }}
           onKeyDown={(event) => {
-            if (event.key === "-") event.preventDefault();
+            if (!allowNegative && event.key === "-") event.preventDefault();
           }}
-          onChange={(event) => {
-            const nextDraft = event.target.value.replace(/-/g, "");
-            const nextValue = Number(nextDraft);
-            setDraft(nextDraft);
-            if (nextDraft.trim() === "") onChange(min);
-            else if (Number.isFinite(nextValue)) onChange(nextValue);
-          }}
+          onInput={(event) => updateDraftValue(event.currentTarget.value)}
+          onChange={(event) => updateDraftValue(event.currentTarget.value)}
           onBlur={() => {
             setFocused(false);
             const nextValue = Number(draft);
             if (draft.trim() === "" || !Number.isFinite(nextValue)) {
-              onChange(min);
+              onChange(fallbackValue);
             }
           }}
           className={unit ? "pr-12" : undefined}
