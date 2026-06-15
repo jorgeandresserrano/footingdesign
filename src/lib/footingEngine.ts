@@ -27,10 +27,12 @@ export interface EngineGeometry {
 
 export interface EngineMaterials {
   concreteStrength: number;
+  concreteElasticModulus: number;
   rebarYield: number;
   concreteUnitWeight: number;
   clearCover: number;
   allowableBearing: number;
+  subgradeReactionModulus: number;
   soilFrictionCoefficient: number;
 }
 
@@ -128,6 +130,15 @@ export interface FootingDesignResult {
     maxServiceCompression: number;
     maxStrengthCompression: number;
   };
+  rigidity: {
+    status: "rigid" | "flexible" | "unknown";
+    ratioX: number | null;
+    ratioZ: number | null;
+    elasticLength: number | null;
+    governingProjection: number | null;
+    basis: string;
+    details: string[];
+  };
   checks: DesignCheck[];
   serviceBearing: BearingCaseResult[];
   strengthCases: StructuralCaseResult[];
@@ -224,6 +235,7 @@ function codeReferences(
       `${buildingCode} Chapter 19 / Section 1901 for ACI 318 concrete design.`,
       `${loadStandard} combinations are expected in the service and strength load tables.`,
       `${concreteStandard} controls footing flexure, shear, and minimum reinforcement checks.`,
+      "ACI 336 guides the rigid-versus-flexible foundation advisory.",
     ];
   }
 
@@ -231,6 +243,7 @@ function codeReferences(
     `${buildingCode} Part 4 for structural loads and limit states.`,
     `${concreteStandard} controls footing flexure, shear, and minimum reinforcement checks.`,
     "NBCC load combinations are expected in the service and strength load tables.",
+    "ACI 336 guides the rigid-versus-flexible foundation advisory.",
   ];
 }
 
@@ -316,6 +329,65 @@ function pressureAt(
   z: number
 ) {
   return field.q0 + field.qx * x + field.qz * z;
+}
+
+function rigidityAdvice(
+  geometry: EngineGeometry,
+  materials: EngineMaterials
+): FootingDesignResult["rigidity"] {
+  const ec = positive(materials.concreteElasticModulus);
+  const ks = positive(materials.subgradeReactionModulus);
+  const thickness = positive(geometry.footingThickness);
+  const length = positive(geometry.footingLength);
+  const width = positive(geometry.footingWidth);
+  const pedestalLength = positive(geometry.pedestalLength);
+  const pedestalWidth = positive(geometry.pedestalWidth);
+  const offsetX = finite(geometry.pedestalOffsetX);
+  const offsetZ = finite(geometry.pedestalOffsetZ);
+  const projectionX = Math.max(
+    length / 2 - (offsetX + pedestalLength / 2),
+    offsetX - pedestalLength / 2 + length / 2,
+    0
+  );
+  const projectionZ = Math.max(
+    width / 2 - (offsetZ + pedestalWidth / 2),
+    offsetZ - pedestalWidth / 2 + width / 2,
+    0
+  );
+
+  if (ec <= EPS || ks <= EPS || thickness <= EPS) {
+    return {
+      status: "unknown",
+      ratioX: null,
+      ratioZ: null,
+      elasticLength: null,
+      governingProjection: null,
+      basis:
+        "ACI 336 rigidity advisory needs concrete modulus Ec and vertical subgrade reaction modulus ks.",
+      details: ["Enter Ec and ks to classify rigid versus flexible behavior."],
+    };
+  }
+
+  const elasticLength = ((ec * 1000) * thickness ** 3 / (3 * ks)) ** 0.25;
+  const ratioX = projectionX / Math.max(elasticLength, EPS);
+  const ratioZ = projectionZ / Math.max(elasticLength, EPS);
+  const governingRatio = Math.max(ratioX, ratioZ);
+  const governingProjection = Math.max(projectionX, projectionZ);
+  const rigid = governingRatio <= 1.75;
+
+  return {
+    status: rigid ? "rigid" : "flexible",
+    ratioX,
+    ratioZ,
+    elasticLength,
+    governingProjection,
+    basis:
+      "ACI 336 elastic-foundation screen: treat footing as rigid when L/Le <= 1.75; otherwise use flexible soil-structure analysis.",
+    details: [
+      `Le = ${round(elasticLength)} m from (Ec h^3 / 3ks)^0.25 with Ec converted from MPa to kN/m2.`,
+      `Lx/Le = ${round(ratioX)}, Lz/Le = ${round(ratioZ)} using footing projections beyond the pedestal.`,
+    ],
+  };
 }
 
 function normalizeRect(rect: Rect): Rect | null {
@@ -415,6 +487,17 @@ function providedSteelPerMeter(diameterMm: number, spacingMm: number) {
 
 function effectiveDepth(thicknessM: number, coverMm: number, barDiameterMm: number) {
   return Math.max(thicknessM * 1000 - Math.max(coverMm, 0) - positive(barDiameterMm) / 2, 0);
+}
+
+function conservativeTwoLayerEffectiveDepth(
+  thicknessM: number,
+  coverMm: number,
+  barDiameterXmm: number,
+  barDiameterZmm: number
+) {
+  const largerBar = Math.max(positive(barDiameterXmm), positive(barDiameterZmm));
+  const smallerBar = Math.min(positive(barDiameterXmm), positive(barDiameterZmm));
+  return Math.max(thicknessM * 1000 - Math.max(coverMm, 0) - largerBar - smallerBar / 2, 0);
 }
 
 function minimumSteel(
@@ -944,16 +1027,24 @@ export function calculateFootingDesign({
 }): FootingDesignResult {
   const params = codeParameters(concreteStandard);
   const weight = footingWeight(geometry, materials);
-  const dX = effectiveDepth(
+  const dXSingleLayer = effectiveDepth(
     geometry.footingThickness,
     materials.clearCover,
     reinforcement.barDiameterX
   );
-  const dZ = effectiveDepth(
+  const dZSingleLayer = effectiveDepth(
     geometry.footingThickness,
     materials.clearCover,
     reinforcement.barDiameterZ
   );
+  const conservativeDepth = conservativeTwoLayerEffectiveDepth(
+    geometry.footingThickness,
+    materials.clearCover,
+    reinforcement.barDiameterX,
+    reinforcement.barDiameterZ
+  );
+  const dX = Math.min(dXSingleLayer, conservativeDepth);
+  const dZ = Math.min(dZSingleLayer, conservativeDepth);
   const dAvg = (dX + dZ) / 2;
   const asX = providedSteelPerMeter(
     reinforcement.barDiameterX,
@@ -971,7 +1062,9 @@ export function calculateFootingDesign({
     "Load rows are already-combined service/stability and strength combinations; this engine does not generate ASCE or NBCC combinations from D/L/W/E components.",
     "P is compression-positive and acts at top of pedestal. Hx/Hz add overturning through pedestal height. Mx/Mz act at top of pedestal.",
     "Service bearing includes footing self-weight with a 1.0 factor. Strength flexure and shear use net soil pressure from column load and overturning; footing self-weight cancels as distributed dead load.",
+    "Orthogonal bottom bars are treated conservatively as a two-layer mat; both d_x and d_z use the upper-layer effective depth.",
     "Soil pressure uses linear elastic distribution. Negative pressure means contact loss; affected structural checks are flagged.",
+    "ACI 336 rigidity result is advisory only; flexible classification means use soil-structure interaction instead of the linear pressure assumption.",
     "Pedestal is treated as a rectangular loaded area. Pedestal and pedestal-to-footing transfer design are outside this footing-slab check.",
   ];
 
@@ -1108,7 +1201,9 @@ export function calculateFootingDesign({
       unit: "mm",
       governingCase: "Geometry",
       basis: params.minDepthBasis,
-      details: [`dX = ${round(dX)} mm, dZ = ${round(dZ)} mm.`],
+      details: [
+        `dX = ${round(dX)} mm, dZ = ${round(dZ)} mm using conservative upper-layer depth for a two-layer orthogonal mat.`,
+      ],
       notes: [],
     })
   );
@@ -1141,6 +1236,7 @@ export function calculateFootingDesign({
   );
 
   const strengthWarnings = strengthCases.some((row) => row.minNetPressure < -EPS);
+  const rigidity = rigidityAdvice(geometry, materials);
   const flexureGoverningX = governing(
     strengthLoadCases.map((loadCase) => {
       const moments = loadMomentsAtFootingCenter(loadCase, geometry);
@@ -1381,6 +1477,7 @@ export function calculateFootingDesign({
       references: codeReferences(buildingCode, loadStandard, concreteStandard),
       assumptions,
     },
+    rigidity,
     summary: {
       overallStatus: overallStatus(checks),
       footingSelfWeight: weight,

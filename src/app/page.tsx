@@ -18,8 +18,10 @@ import {
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ClipboardEvent,
+  type KeyboardEvent,
 } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +32,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -104,6 +107,7 @@ const KN_M_TO_KIP_FT = 0.7375621493;
 const KN_PER_M_TO_KIP_PER_FT = KN_TO_KIP / M_TO_FT;
 const KN_M_PER_M_TO_KIP_FT_PER_FT = KN_M_TO_KIP_FT / M_TO_FT;
 const MM2_PER_M_TO_IN2_PER_FT = 0.0015500031 / M_TO_FT;
+const PCI_TO_KN_M3 = 271.4471412;
 const APP_DATE = "2026-06-15";
 const APP_VERSION = "2";
 
@@ -282,10 +286,12 @@ const MATH_TEXT_PATTERNS: Array<{
 
 interface MaterialInputs {
   concreteStrength: number;
+  concreteElasticModulus: number;
   rebarYield: number;
   concreteUnitWeight: number;
   clearCover: number;
   allowableBearing: number;
+  subgradeReactionModulus: number;
   soilFrictionCoefficient: number;
 }
 
@@ -315,6 +321,7 @@ type LoadCaseColumn =
   | "foundationDeadLoadFactor";
 type CellPosition = { row: number; column: number };
 type SelectionRange = { start: CellPosition; end: CellPosition };
+type EditingCell = CellPosition | null;
 
 const DEFAULT_GEOMETRY_SI: FootingGeometry = {
   footingLength: 2.4,
@@ -329,19 +336,58 @@ const DEFAULT_GEOMETRY_SI: FootingGeometry = {
 
 const DEFAULT_MATERIALS_SI: MaterialInputs = {
   concreteStrength: 30,
+  concreteElasticModulus: concreteElasticModulusFromStrength(30, "SI"),
   rebarYield: 420,
   concreteUnitWeight: 24,
   clearCover: 75,
   allowableBearing: 200,
+  subgradeReactionModulus: 45000,
   soilFrictionCoefficient: 0.45,
 };
 
 const DEFAULT_REINFORCEMENT_SI: ReinforcementInputs = {
-  barDiameterX: 20,
+  barDiameterX: 19.5,
   barSpacingX: 200,
-  barDiameterZ: 20,
+  barDiameterZ: 19.5,
   barSpacingZ: 200,
 };
+
+const METRIC_REBARS = [
+  { label: "10M", diameter: 11.3 },
+  { label: "15M", diameter: 16 },
+  { label: "20M", diameter: 19.5 },
+  { label: "25M", diameter: 25.2 },
+  { label: "30M", diameter: 29.9 },
+  { label: "35M", diameter: 35.7 },
+  { label: "45M", diameter: 43.7 },
+  { label: "55M", diameter: 56.4 },
+];
+
+const US_REBARS = [
+  { label: "#3", diameter: 0.375 },
+  { label: "#4", diameter: 0.5 },
+  { label: "#5", diameter: 0.625 },
+  { label: "#6", diameter: 0.75 },
+  { label: "#7", diameter: 0.875 },
+  { label: "#8", diameter: 1 },
+  { label: "#9", diameter: 1.128 },
+  { label: "#10", diameter: 1.27 },
+  { label: "#11", diameter: 1.41 },
+  { label: "#14", diameter: 1.693 },
+  { label: "#18", diameter: 2.257 },
+];
+
+function rebarOptions(units: UnitSystem) {
+  return units === "SI" ? METRIC_REBARS : US_REBARS;
+}
+
+function nearestRebarDiameter(value: number, units: UnitSystem) {
+  return rebarOptions(units).reduce((best, option) =>
+    Math.abs(option.diameter - value) < Math.abs(best.diameter - value)
+      ? option
+      : best
+  ).diameter;
+}
 
 const LOAD_CASE_COLUMNS: Array<{
   key: LoadCaseColumn;
@@ -467,6 +513,15 @@ function roundMaterial(value: number) {
   return Math.round(value * 1000) / 1000;
 }
 
+function concreteElasticModulusFromStrength(
+  concreteStrength: number,
+  units: UnitSystem
+) {
+  const strength = Math.max(concreteStrength, 0);
+  if (units === "SI") return roundMaterial(4700 * Math.sqrt(strength));
+  return roundMaterial(1802.5 * Math.sqrt(strength));
+}
+
 function convertGeometry(
   geometry: FootingGeometry,
   from: UnitSystem,
@@ -497,6 +552,10 @@ function convertMaterials(
     concreteStrength: roundMaterial(
       materials.concreteStrength * (toUsc ? MPA_TO_KSI : 1 / MPA_TO_KSI)
     ),
+    concreteElasticModulus: roundMaterial(
+      materials.concreteElasticModulus *
+        (toUsc ? MPA_TO_KSI : 1 / MPA_TO_KSI)
+    ),
     rebarYield: roundMaterial(
       materials.rebarYield * (toUsc ? MPA_TO_KSI : 1 / MPA_TO_KSI)
     ),
@@ -508,6 +567,10 @@ function convertMaterials(
     ),
     allowableBearing: roundMaterial(
       materials.allowableBearing * (toUsc ? KPA_TO_KSF : 1 / KPA_TO_KSF)
+    ),
+    subgradeReactionModulus: roundMaterial(
+      materials.subgradeReactionModulus *
+        (toUsc ? 1 / PCI_TO_KN_M3 : PCI_TO_KN_M3)
     ),
     soilFrictionCoefficient: materials.soilFrictionCoefficient,
   };
@@ -652,6 +715,7 @@ function unitTex(unit: string) {
     kN: "\\mathrm{kN}",
     "kN/m": "\\mathrm{kN/m}",
     "kN/m³": "\\mathrm{kN/m^3}",
+    "(kN/m)/m²": "\\mathrm{(kN/m)/m^2}",
     "kN·m": "\\mathrm{kN\\cdot m}",
     "kN·m/m": "\\mathrm{kN\\cdot m/m}",
     ksi: "\\mathrm{ksi}",
@@ -662,12 +726,84 @@ function unitTex(unit: string) {
     "mm2/m": "\\mathrm{mm^2/m}",
     MPa: "\\mathrm{MPa}",
     pcf: "\\mathrm{pcf}",
+    pci: "\\mathrm{pci}",
   };
   return units[unit] ?? `\\mathrm{${unit.replace(/\s+/g, "\\ ")}}`;
 }
 
 function MathUnit({ unit }: { unit: string }) {
-  return <InlineMath tex={unitTex(unit)} />;
+  return <span>{unit}</span>;
+}
+
+function RebarSelect({
+  id,
+  label,
+  value,
+  units,
+  onChange,
+  tooltip,
+}: {
+  id: string;
+  label: React.ReactNode;
+  value: number;
+  units: UnitSystem;
+  onChange: (value: number) => void;
+  tooltip?: React.ReactNode;
+}) {
+  const options = rebarOptions(units);
+  const selected = nearestRebarDiameter(value, units);
+  const unit = units === "SI" ? "mm" : "in";
+
+  return (
+    <div className="flex h-full flex-col space-y-1.5">
+      <div className="flex flex-1 items-end gap-1.5">
+        <Label htmlFor={id} className="text-sm">
+          {label}
+        </Label>
+        {tooltip ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <Info size={13} />
+                </button>
+              }
+            />
+            <TooltipContent className="max-w-xs text-xs">
+              {tooltip}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
+      <Select value={String(selected)} onValueChange={(next) => onChange(Number(next))}>
+        <SelectTrigger
+          id={id}
+          size="sm"
+          className="mt-auto h-9 w-full justify-between px-3 text-sm"
+          aria-label={typeof label === "string" ? label : id}
+        >
+          <SelectValue>
+            {() => {
+              const option = options.find((item) => item.diameter === selected);
+              return option
+                ? `${option.label} (${fmt(option.diameter)} ${unit})`
+                : `${fmt(selected)} ${unit}`;
+            }}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option.label} value={String(option.diameter)}>
+              {option.label} ({fmt(option.diameter)} {unit})
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
 }
 
 function MathValue({
@@ -681,11 +817,29 @@ function MathValue({
 }) {
   if (value === null) return <>N/A</>;
   if (!Number.isFinite(value)) return <InlineMath tex="\\infty" />;
-  const nextUnit = unit ? unitTex(unit) : "";
   return (
-    <InlineMath
-      tex={`${texNumber(value, digits)}${nextUnit ? `\\,${nextUnit}` : ""}`}
-    />
+    <>
+      {fmt(value, digits)}
+      {unit ? ` ${unit}` : ""}
+    </>
+  );
+}
+
+function PlainEquationValue({
+  symbol,
+  value,
+  unit,
+  digits = 3,
+}: {
+  symbol: string;
+  value: number;
+  unit: string;
+  digits?: number;
+}) {
+  return (
+    <>
+      <FormulaValue tex={symbol} /> = {fmt(value, digits)} {unit}
+    </>
   );
 }
 
@@ -693,7 +847,7 @@ function CheckValue({
   value,
   unit,
   units,
-  digits = 3,
+  digits,
 }: {
   value: number | null;
   unit: CheckUnit;
@@ -702,11 +856,13 @@ function CheckValue({
 }) {
   if (value === null) return <>N/A</>;
   if (!Number.isFinite(value)) return <InlineMath tex="\\infty" />;
+  const display = displayUnit(unit, units);
+  const resolvedDigits = digits ?? (display === "kN" || display === "kPa" ? 0 : 3);
   return (
     <MathValue
       value={convertedValue(value, unit, units)}
-      unit={displayUnit(unit, units)}
-      digits={digits}
+      unit={display}
+      digits={resolvedDigits}
     />
   );
 }
@@ -877,6 +1033,14 @@ function normalizedSelection(range: SelectionRange) {
   };
 }
 
+function isSameCell(a: CellPosition | null, b: CellPosition) {
+  return a?.row === b.row && a.column === b.column;
+}
+
+function loadCaseCellSelector(position: CellPosition) {
+  return `[data-load-cell="${position.row}-${position.column}"]`;
+}
+
 function serializeSelectedCells(
   loadCases: LoadCase[],
   columns: typeof LOAD_CASE_COLUMNS,
@@ -917,15 +1081,20 @@ export default function Home() {
   const [loadCombinationType, setLoadCombinationType] =
     useState<LoadCombinationType>("service");
   const [isSelectingCells, setIsSelectingCells] = useState(false);
+  const isSelectingCellsRef = useRef(false);
   const [selectedCells, setSelectedCells] = useState<SelectionRange | null>(
     null
   );
+  const [editingCell, setEditingCell] = useState<EditingCell>(null);
+  const [editingCellValue, setEditingCellValue] = useState("");
   const [geometry, setGeometry] = useState<FootingGeometry>(
     defaultGeometry("SI")
   );
   const [materials, setMaterials] = useState<MaterialInputs>(
     defaultMaterials("SI")
   );
+  const [concreteModulusOverridden, setConcreteModulusOverridden] =
+    useState(false);
   const [reinforcement, setReinforcement] = useState<ReinforcementInputs>(
     defaultReinforcement("SI")
   );
@@ -951,6 +1120,7 @@ export default function Home() {
   const unitWeightUnit = units === "SI" ? "kN/m³" : "pcf";
   const coverUnit = units === "SI" ? "mm" : "in";
   const bearingUnit = units === "SI" ? "kPa" : "ksf";
+  const subgradeReactionUnit = units === "SI" ? "(kN/m)/m²" : "pci";
   const forceUnit = units === "SI" ? "kN" : "kip";
   const momentUnit = units === "SI" ? "kN·m" : "kip·ft";
   const pedestalOffsetX = finiteNumber(geometry.pedestalOffsetX);
@@ -1053,7 +1223,10 @@ export default function Home() {
 
   useEffect(() => {
     if (!isSelectingCells) return;
-    const stopSelecting = () => setIsSelectingCells(false);
+    const stopSelecting = () => {
+      isSelectingCellsRef.current = false;
+      setIsSelectingCells(false);
+    };
     window.addEventListener("mouseup", stopSelecting);
     return () => window.removeEventListener("mouseup", stopSelecting);
   }, [isSelectingCells]);
@@ -1065,7 +1238,33 @@ export default function Home() {
   };
 
   const updateMaterials = (key: keyof MaterialInputs, value: number) => {
+    if (key === "concreteStrength") {
+      setMaterials((current) => ({
+        ...current,
+        concreteStrength: value,
+        concreteElasticModulus: concreteModulusOverridden
+          ? current.concreteElasticModulus
+          : concreteElasticModulusFromStrength(value, units),
+      }));
+      return;
+    }
+
+    if (key === "concreteElasticModulus") {
+      setConcreteModulusOverridden(true);
+    }
+
     setMaterials((current) => ({ ...current, [key]: value }));
+  };
+
+  const useCalculatedConcreteModulus = () => {
+    setConcreteModulusOverridden(false);
+    setMaterials((current) => ({
+      ...current,
+      concreteElasticModulus: concreteElasticModulusFromStrength(
+        current.concreteStrength,
+        units
+      ),
+    }));
   };
 
   const updateReinforcement = (
@@ -1100,14 +1299,69 @@ export default function Home() {
     );
   };
 
+  const clearLoadCaseTable = () => {
+    setCurrentLoadCases([blankLoadCase(`load-blank-${Date.now()}`)]);
+    setSelectedCells(null);
+    setEditingCell(null);
+    setEditingCellValue("");
+  };
+
+
+  const focusLoadCaseCell = (position: CellPosition) => {
+    requestAnimationFrame(() => {
+      const cell = document.querySelector<HTMLElement>(
+        loadCaseCellSelector(position)
+      );
+      cell?.focus();
+    });
+  };
+
+  const moveCellSelection = (row: number, column: number) => {
+    const next = {
+      row: Math.max(0, Math.min(row, loadCases.length - 1)),
+      column: Math.max(0, Math.min(column, loadCaseColumns.length - 1)),
+    };
+    setSelectedCells({ start: next, end: next });
+    setEditingCell(null);
+    setEditingCellValue("");
+    focusLoadCaseCell(next);
+  };
+
+  const extendSelectionWithKeyboard = (row: number, column: number) => {
+    const next = {
+      row: Math.max(0, Math.min(row, loadCases.length - 1)),
+      column: Math.max(0, Math.min(column, loadCaseColumns.length - 1)),
+    };
+    setSelectedCells((current) => {
+      const start = current?.start ?? { row: row, column: column };
+      return { start, end: next };
+    });
+    setEditingCell(null);
+    setEditingCellValue("");
+    focusLoadCaseCell(next);
+  };
+
+  const moveOrExtendCellSelection = (
+    event: KeyboardEvent<HTMLDivElement>,
+    row: number,
+    column: number
+  ) => {
+    if (event.shiftKey) extendSelectionWithKeyboard(row, column);
+    else moveCellSelection(row, column);
+  };
+
   const startCellSelection = (row: number, column: number) => {
     const position = { row, column };
     setSelectedCells({ start: position, end: position });
+    isSelectingCellsRef.current = true;
     setIsSelectingCells(true);
+    setEditingCell(null);
+    setEditingCellValue("");
+    focusLoadCaseCell(position);
   };
 
   const extendCellSelection = (row: number, column: number) => {
-    if (!isSelectingCells) return;
+    if (!isSelectingCellsRef.current) return;
     setSelectedCells((current) =>
       current ? { ...current, end: { row, column } } : current
     );
@@ -1123,6 +1377,56 @@ export default function Home() {
       column >= columnStart &&
       column <= columnEnd
     );
+  };
+
+  const clearSelectedCells = () => {
+    if (!selectedCells) return;
+    const { rowStart, rowEnd, columnStart, columnEnd } =
+      normalizedSelection(selectedCells);
+
+    setCurrentLoadCases((current) =>
+      ensureTrailingBlank(
+        current.map((loadCase, rowIndex) => {
+          if (rowIndex < rowStart || rowIndex > rowEnd) return loadCase;
+          const updated = { ...loadCase };
+          for (
+            let columnIndex = columnStart;
+            columnIndex <= columnEnd;
+            columnIndex += 1
+          ) {
+            const column = loadCaseColumns[columnIndex];
+            if (!column) continue;
+            if (column.key === "name") updated.name = "";
+            else updated[column.key] = 0;
+          }
+          return updated;
+        })
+      )
+    );
+  };
+
+  const editLoadCaseCell = (
+    rowIndex: number,
+    columnIndex: number,
+    value: string,
+    initialValue?: string
+  ) => {
+    const column = loadCaseColumns[columnIndex];
+    if (!column) return;
+    setEditingCell({ row: rowIndex, column: columnIndex });
+    setEditingCellValue(initialValue ?? value);
+  };
+
+  const commitLoadCaseCell = (
+    rowIndex: number,
+    columnIndex: number,
+    value: string
+  ) => {
+    const column = loadCaseColumns[columnIndex];
+    if (!column) return;
+    updateLoadCase(rowIndex, column.key, value);
+    setEditingCell(null);
+    setEditingCellValue("");
   };
 
   const pasteLoadCases = (
@@ -1165,6 +1469,93 @@ export default function Home() {
     });
   };
 
+  const pasteSelectedLoadCases = (event: ClipboardEvent<HTMLDivElement>) => {
+    if (!selectedCells) return;
+    if (event.target instanceof HTMLInputElement) return;
+    const { rowStart, columnStart } = normalizedSelection(selectedCells);
+    pasteLoadCases(
+      event as unknown as ClipboardEvent<HTMLInputElement>,
+      rowStart,
+      columnStart
+    );
+  };
+
+  const handleLoadCaseCellKeyDown = (
+    event: KeyboardEvent<HTMLDivElement>,
+    rowIndex: number,
+    columnIndex: number
+  ) => {
+    const column = loadCaseColumns[columnIndex];
+    if (!column) return;
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveOrExtendCellSelection(event, rowIndex - 1, columnIndex);
+      return;
+    }
+
+    if (event.key === "ArrowDown" || event.key === "Enter") {
+      event.preventDefault();
+      if (event.key === "ArrowDown") {
+        moveOrExtendCellSelection(event, rowIndex + 1, columnIndex);
+      } else {
+        moveCellSelection(rowIndex + 1, columnIndex);
+      }
+      return;
+    }
+
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveOrExtendCellSelection(event, rowIndex, columnIndex - 1);
+      return;
+    }
+
+    if (event.key === "ArrowRight" || event.key === "Tab") {
+      event.preventDefault();
+      if (event.key === "ArrowRight") {
+        moveOrExtendCellSelection(event, rowIndex, columnIndex + 1);
+      } else {
+        moveCellSelection(rowIndex, columnIndex + 1);
+      }
+      return;
+    }
+
+    if (event.key === "F2") {
+      event.preventDefault();
+      editLoadCaseCell(
+        rowIndex,
+        columnIndex,
+        column.key === "name"
+          ? loadCases[rowIndex]?.name ?? ""
+          : String(loadCases[rowIndex]?.[column.key] ?? "")
+      );
+      return;
+    }
+
+    if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      clearSelectedCells();
+      return;
+    }
+
+    if (
+      event.key.length === 1 &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey
+    ) {
+      event.preventDefault();
+      editLoadCaseCell(
+        rowIndex,
+        columnIndex,
+        column.key === "name"
+          ? loadCases[rowIndex]?.name ?? ""
+          : String(loadCases[rowIndex]?.[column.key] ?? ""),
+        event.key
+      );
+    }
+  };
+
   const copyLoadCases = async () => {
     const text = selectedCells
       ? serializeSelectedCells(loadCases, loadCaseColumns, selectedCells)
@@ -1195,9 +1586,14 @@ export default function Home() {
   const switchUnits = (nextUnits: UnitSystem) => {
     setGeometry((current) => convertGeometry(current, units, nextUnits));
     setMaterials((current) => convertMaterials(current, units, nextUnits));
-    setReinforcement((current) =>
-      convertReinforcement(current, units, nextUnits)
-    );
+    setReinforcement((current) => {
+      const converted = convertReinforcement(current, units, nextUnits);
+      return {
+        ...converted,
+        barDiameterX: nearestRebarDiameter(converted.barDiameterX, nextUnits),
+        barDiameterZ: nearestRebarDiameter(converted.barDiameterZ, nextUnits),
+      };
+    });
     setServiceLoadCases((current) =>
       convertLoadCases(current, units, nextUnits)
     );
@@ -1210,6 +1606,7 @@ export default function Home() {
   const resetInputs = () => {
     setGeometry(defaultGeometry(units));
     setMaterials(defaultMaterials(units));
+    setConcreteModulusOverridden(false);
     setReinforcement(defaultReinforcement(units));
     setServiceLoadCases(defaultLoadCases(units));
     setStrengthLoadCases(defaultStrengthLoadCases(units));
@@ -1393,14 +1790,6 @@ export default function Home() {
                   <h2 id="load-table-heading" className="text-base font-semibold">
                     Load cases
                   </h2>
-	                  <p className="mt-1 text-sm text-muted-foreground">
-	                    Paste tab-delimited cells from Excel.{" "}
-	                    <FormulaValue tex="P" />, <FormulaValue tex="H_x" />, and{" "}
-	                    <FormulaValue tex="H_z" /> use{" "}
-	                    <MathUnit unit={forceUnit} />; <FormulaValue tex="M_x" />,{" "}
-	                    <FormulaValue tex="M_z" />, and <FormulaValue tex="T" /> use{" "}
-	                    <MathUnit unit={momentUnit} />. Drag across cells to select.
-                  </p>
                 </div>
                 <Button
                   type="button"
@@ -1416,12 +1805,16 @@ export default function Home() {
               <div
                 className="min-h-0 flex-1 overflow-auto p-5"
                 onCopy={copySelectedCells}
+                onPaste={pasteSelectedLoadCases}
               >
                 <Tabs
                   value={loadCombinationType}
                   onValueChange={(value) => {
                     setLoadCombinationType(value as LoadCombinationType);
+                    isSelectingCellsRef.current = false;
                     setSelectedCells(null);
+                    setEditingCell(null);
+                    setEditingCellValue("");
                   }}
                   className="gap-4"
                 >
@@ -1431,12 +1824,27 @@ export default function Home() {
                   </TabsList>
                   <TabsContent value={loadCombinationType}>
                     <Table
-                      className={`border ${
+                      className={`table-fixed border ${
                         loadCombinationType === "strength"
                           ? "min-w-[980px]"
                           : "min-w-[760px]"
                       }`}
                     >
+                      <colgroup>
+                        {loadCaseColumns.map((column) => (
+                          <col
+                            key={column.key}
+                            className={
+                              column.unitType === "text"
+                                ? "w-36"
+                                : column.unitType === "factor"
+                                ? "w-32"
+                                : "w-28"
+                            }
+                          />
+                        ))}
+                        <col className="w-12" />
+                      </colgroup>
                       <TableHeader>
                         <TableRow>
                           {loadCaseColumns.map((column) => (
@@ -1466,9 +1874,17 @@ export default function Home() {
                           <TableRow key={loadCase.id}>
                             {loadCaseColumns.map((column, columnIndex) => {
                               const isEmptyRow = isEmptyLoadCase(loadCase);
+                              const position = {
+                                row: rowIndex,
+                                column: columnIndex,
+                              };
                               const selected = isCellSelected(
                                 rowIndex,
                                 columnIndex
+                              );
+                              const editing = isSameCell(
+                                editingCell,
+                                position
                               );
                               const value =
                                 isEmptyRow
@@ -1479,44 +1895,103 @@ export default function Home() {
                               return (
                                 <TableCell
                                   key={column.key}
-                                  className={`border-r p-0 ${
+                                  className={`relative h-9 border-r p-0 ${
                                     selected
-                                      ? "bg-blue-100 ring-1 ring-inset ring-blue-500 dark:bg-blue-950"
+                                      ? "bg-emerald-50 dark:bg-emerald-950/60"
+                                      : "bg-white dark:bg-slate-900"
+                                  } ${
+                                    selected && !editing
+                                      ? "ring-1 ring-inset ring-emerald-600"
                                       : ""
                                   }`}
-                                  onMouseDown={() =>
-                                    startCellSelection(rowIndex, columnIndex)
-                                  }
+                                  onMouseDown={(event) => {
+                                    event.preventDefault();
+                                    startCellSelection(rowIndex, columnIndex);
+                                  }}
                                   onMouseEnter={() =>
                                     extendCellSelection(rowIndex, columnIndex)
                                   }
+                                  onMouseMove={() =>
+                                    extendCellSelection(rowIndex, columnIndex)
+                                  }
                                 >
-                                  <input
-                                    aria-label={`${column.label} row ${
-                                      rowIndex + 1
-                                    }`}
-                                    value={value}
-                                    inputMode={
-                                      column.key === "name"
-                                        ? "text"
-                                        : "decimal"
-                                    }
-                                    onChange={(event) =>
-                                      updateLoadCase(
-                                        rowIndex,
-                                        column.key,
-                                        event.target.value
-                                      )
-                                    }
-                                    onPaste={(event) =>
-                                      pasteLoadCases(
-                                        event,
-                                        rowIndex,
-                                        columnIndex
-                                      )
-                                    }
-                                    className="h-9 w-full min-w-0 bg-transparent px-2 text-sm outline-none focus:bg-blue-50 dark:focus:bg-slate-800"
-                                  />
+                                  {editing ? (
+                                    <input
+                                      autoFocus
+                                      aria-label={`${column.label} row ${
+                                        rowIndex + 1
+                                      }`}
+                                      value={editingCellValue}
+                                      inputMode={
+                                        column.key === "name"
+                                          ? "text"
+                                          : "decimal"
+                                      }
+                                      onBlur={() =>
+                                        commitLoadCaseCell(
+                                          rowIndex,
+                                          columnIndex,
+                                          editingCellValue
+                                        )
+                                      }
+                                      onChange={(event) =>
+                                        setEditingCellValue(event.target.value)
+                                      }
+                                      onKeyDown={(event) => {
+                                        if (event.key === "Enter") {
+                                          event.preventDefault();
+                                          commitLoadCaseCell(
+                                            rowIndex,
+                                            columnIndex,
+                                            editingCellValue
+                                          );
+                                          focusLoadCaseCell(position);
+                                        }
+                                        if (event.key === "Escape") {
+                                          event.preventDefault();
+                                          setEditingCell(null);
+                                          setEditingCellValue("");
+                                        }
+                                      }}
+                                      onPaste={(event) =>
+                                        pasteLoadCases(
+                                          event,
+                                          rowIndex,
+                                          columnIndex
+                                        )
+                                      }
+                                      className="h-9 w-full min-w-0 bg-white px-2 text-sm outline-2 outline-emerald-600 dark:bg-slate-900"
+                                    />
+                                  ) : (
+                                    <div
+                                      aria-label={`${column.label} row ${
+                                        rowIndex + 1
+                                      }`}
+                                      data-load-cell={`${rowIndex}-${columnIndex}`}
+                                      role="gridcell"
+                                      tabIndex={0}
+                                      onDoubleClick={() =>
+                                        editLoadCaseCell(
+                                          rowIndex,
+                                          columnIndex,
+                                          value
+                                        )
+                                      }
+                                      onKeyDown={(event) =>
+                                        handleLoadCaseCellKeyDown(
+                                          event,
+                                          rowIndex,
+                                          columnIndex
+                                        )
+                                      }
+                                      className="flex h-9 w-full cursor-cell items-center overflow-hidden px-2 text-sm outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-700"
+                                    >
+                                      <span className="truncate">{value}</span>
+                                    </div>
+                                  )}
+                                  {selected && !editing ? (
+                                    <span className="pointer-events-none absolute -bottom-1 -right-1 size-2 border border-white bg-emerald-700 dark:border-slate-900" />
+                                  ) : null}
                                 </TableCell>
                               );
                             })}
@@ -1548,6 +2023,14 @@ export default function Home() {
 	                  at top of pedestal. The last row stays blank for new load cases.
                 </p>
                 <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={clearLoadCaseTable}
+                  >
+                    <Trash2 />
+                    Clear table
+                  </Button>
                   <Button
                     type="button"
                     variant="outline"
@@ -1628,7 +2111,7 @@ export default function Home() {
                 />
                 <NumField
                   id="pedestalHeight"
-                  label="Pedestal visual height"
+                  label="Pedestal height"
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.pedestalHeight}
                   min={0.05}
@@ -1665,7 +2148,7 @@ export default function Home() {
                   Footing concrete, reinforcing steel, cover, and bearing inputs.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <NumField
                   id="concreteStrength"
                   label="Concrete strength"
@@ -1677,6 +2160,38 @@ export default function Home() {
                   }
                   tooltip="Specified compressive strength for footing concrete."
                 />
+                <div className="space-y-1.5">
+                  <NumField
+                    id="concreteElasticModulus"
+                    label={
+                      <span className="inline-flex items-center gap-1.5">
+                        Concrete modulus
+                        <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                          {concreteModulusOverridden ? "Override" : "Auto"}
+                        </Badge>
+                      </span>
+                    }
+                    unit={<MathUnit unit={strengthUnit} />}
+                    value={materials.concreteElasticModulus}
+                    min={0}
+                    onChange={(value) =>
+                      updateMaterials("concreteElasticModulus", value)
+                    }
+                    tooltip="Elastic modulus Ec used only for the ACI 336 rigidity advisory. Auto value follows normalweight concrete from f'c unless overridden."
+                  />
+                  {concreteModulusOverridden ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={useCalculatedConcreteModulus}
+                    >
+                      <RotateCcw size={13} />
+                      Use calculated
+                    </Button>
+                  ) : null}
+                </div>
                 <NumField
                   id="rebarYield"
                   label="Rebar yield"
@@ -1718,6 +2233,19 @@ export default function Home() {
                   tooltip="Service-level allowable soil bearing pressure for footing checks."
                 />
                 <NumField
+                  id="subgradeReactionModulus"
+                  label="Subgrade reaction"
+                  unit={<MathUnit unit={subgradeReactionUnit} />}
+                  value={materials.subgradeReactionModulus}
+                  min={0}
+                  step={1}
+                  displayDigits={0}
+                  onChange={(value) =>
+                    updateMaterials("subgradeReactionModulus", value)
+                  }
+                  tooltip="Vertical modulus of subgrade reaction ks used for the ACI 336 rigidity advisory."
+                />
+                <NumField
                   id="soilFrictionCoefficient"
                   label="Soil friction coefficient"
                   value={materials.soilFrictionCoefficient}
@@ -1739,51 +2267,62 @@ export default function Home() {
                   Bottom mat used for flexure and minimum steel checks.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <NumField
-                  id="barDiameterX"
-                  label="X bar diameter"
-                  unit={<MathUnit unit={coverUnit} />}
-                  value={reinforcement.barDiameterX}
-                  min={0.1}
-                  onChange={(value) =>
-                    updateReinforcement("barDiameterX", value)
-                  }
-                  tooltip="Bars parallel to X. Used for footing projection beyond pedestal side faces in X."
-                />
-                <NumField
-                  id="barSpacingX"
-                  label="X bar spacing"
-                  unit={<MathUnit unit={coverUnit} />}
-                  value={reinforcement.barSpacingX}
-                  min={0.1}
-                  onChange={(value) =>
-                    updateReinforcement("barSpacingX", value)
-                  }
-                  tooltip="Center-to-center spacing of bottom bars parallel to X."
-                />
-                <NumField
-                  id="barDiameterZ"
-                  label="Z bar diameter"
-                  unit={<MathUnit unit={coverUnit} />}
-                  value={reinforcement.barDiameterZ}
-                  min={0.1}
-                  onChange={(value) =>
-                    updateReinforcement("barDiameterZ", value)
-                  }
-                  tooltip="Bars parallel to Z. Used for footing projection beyond pedestal side faces in Z."
-                />
-                <NumField
-                  id="barSpacingZ"
-                  label="Z bar spacing"
-                  unit={<MathUnit unit={coverUnit} />}
-                  value={reinforcement.barSpacingZ}
-                  min={0.1}
-                  onChange={(value) =>
-                    updateReinforcement("barSpacingZ", value)
-                  }
-                  tooltip="Center-to-center spacing of bottom bars parallel to Z."
-                />
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <RebarSelect
+                    id="barDiameterX"
+                    label="X bar diameter"
+                    units={units}
+                    value={reinforcement.barDiameterX}
+                    onChange={(value) =>
+                      updateReinforcement("barDiameterX", value)
+                    }
+                    tooltip="Bars parallel to X. Used for footing projection beyond pedestal side faces in X."
+                  />
+                  <NumField
+                    id="barSpacingX"
+                    label="X bar spacing"
+                    unit={<MathUnit unit={coverUnit} />}
+                    value={reinforcement.barSpacingX}
+                    min={0.1}
+                    onChange={(value) =>
+                      updateReinforcement("barSpacingX", value)
+                    }
+                    tooltip="Center-to-center spacing of bottom bars parallel to X."
+                  />
+                  <RebarSelect
+                    id="barDiameterZ"
+                    label="Z bar diameter"
+                    units={units}
+                    value={reinforcement.barDiameterZ}
+                    onChange={(value) =>
+                      updateReinforcement("barDiameterZ", value)
+                    }
+                    tooltip="Bars parallel to Z. Used for footing projection beyond pedestal side faces in Z."
+                  />
+                  <NumField
+                    id="barSpacingZ"
+                    label="Z bar spacing"
+                    unit={<MathUnit unit={coverUnit} />}
+                    value={reinforcement.barSpacingZ}
+                    min={0.1}
+                    onChange={(value) =>
+                      updateReinforcement("barSpacingZ", value)
+                    }
+                    tooltip="Center-to-center spacing of bottom bars parallel to Z."
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Provided reinforcement: X ={" "}
+                  <span className="font-medium text-foreground">
+                    {fmt(designResults.summary.providedAsX, 0)} mm²/m
+                  </span>
+                  ; Z ={" "}
+                  <span className="font-medium text-foreground">
+                    {fmt(designResults.summary.providedAsZ, 0)} mm²/m
+                  </span>
+                  .
+                </p>
               </CardContent>
             </Card>
 
@@ -1936,25 +2475,25 @@ export default function Home() {
 	                    </div>
 	                    <div className="mt-1 space-y-0.5 font-medium">
 	                      <div>
-	                        <FormulaValue
-	                          tex={`d_x = ${texNumber(
-	                            convertedValue(
-	                              designResults.summary.effectiveDepthX,
-	                              "mm",
-	                              units
-	                            )
-	                          )}\\,${unitTex(displayUnit("mm", units))}`}
+	                        <PlainEquationValue
+	                          symbol="d_x"
+	                          value={convertedValue(
+	                            designResults.summary.effectiveDepthX,
+	                            "mm",
+	                            units
+	                          )}
+	                          unit={displayUnit("mm", units)}
 	                        />
 	                      </div>
 	                      <div>
-	                        <FormulaValue
-	                          tex={`d_z = ${texNumber(
-	                            convertedValue(
-	                              designResults.summary.effectiveDepthZ,
-	                              "mm",
-	                              units
-	                            )
-	                          )}\\,${unitTex(displayUnit("mm", units))}`}
+	                        <PlainEquationValue
+	                          symbol="d_z"
+	                          value={convertedValue(
+	                            designResults.summary.effectiveDepthZ,
+	                            "mm",
+	                            units
+	                          )}
+	                          unit={displayUnit("mm", units)}
 	                        />
 	                      </div>
 	                    </div>
@@ -1965,27 +2504,27 @@ export default function Home() {
 	                    </div>
 	                    <div className="mt-1 space-y-0.5 font-medium">
 	                      <div>
-	                        <FormulaValue
-	                          tex={`A_{s,x} = ${texNumber(
-	                            convertedValue(
-	                              designResults.summary.providedAsX,
-	                              "mm2/m",
-	                              units
-	                            ),
-	                            0
-	                          )}\\,${unitTex(displayUnit("mm2/m", units))}`}
+	                        <PlainEquationValue
+	                          symbol="A_{s,x}"
+	                          value={convertedValue(
+	                            designResults.summary.providedAsX,
+	                            "mm2/m",
+	                            units
+	                          )}
+	                          unit={displayUnit("mm2/m", units)}
+	                          digits={0}
 	                        />
 	                      </div>
 	                      <div>
-	                        <FormulaValue
-	                          tex={`A_{s,z} = ${texNumber(
-	                            convertedValue(
-	                              designResults.summary.providedAsZ,
-	                              "mm2/m",
-	                              units
-	                            ),
-	                            0
-	                          )}\\,${unitTex(displayUnit("mm2/m", units))}`}
+	                        <PlainEquationValue
+	                          symbol="A_{s,z}"
+	                          value={convertedValue(
+	                            designResults.summary.providedAsZ,
+	                            "mm2/m",
+	                            units
+	                          )}
+	                          unit={displayUnit("mm2/m", units)}
+	                          digits={0}
 	                        />
 	                      </div>
 	                    </div>
@@ -1996,45 +2535,105 @@ export default function Home() {
 	                    </div>
 	                    <div className="mt-1 space-y-0.5 font-medium">
 	                      <div>
-	                        <FormulaValue
-	                          tex={`A_{s,min,x} = ${texNumber(
-	                            convertedValue(
-	                              designResults.summary.minimumAsX,
-	                              "mm2/m",
-	                              units
-	                            ),
-	                            0
-	                          )}\\,${unitTex(displayUnit("mm2/m", units))}`}
+	                        <PlainEquationValue
+	                          symbol="A_{s,min,x}"
+	                          value={convertedValue(
+	                            designResults.summary.minimumAsX,
+	                            "mm2/m",
+	                            units
+	                          )}
+	                          unit={displayUnit("mm2/m", units)}
+	                          digits={0}
 	                        />
 	                      </div>
 	                      <div>
-	                        <FormulaValue
-	                          tex={`A_{s,min,z} = ${texNumber(
-	                            convertedValue(
-	                              designResults.summary.minimumAsZ,
-	                              "mm2/m",
-	                              units
-	                            ),
-	                            0
-	                          )}\\,${unitTex(displayUnit("mm2/m", units))}`}
+	                        <PlainEquationValue
+	                          symbol="A_{s,min,z}"
+	                          value={convertedValue(
+	                            designResults.summary.minimumAsZ,
+	                            "mm2/m",
+	                            units
+	                          )}
+	                          unit={displayUnit("mm2/m", units)}
+	                          digits={0}
 	                        />
 	                      </div>
 	                    </div>
 	                  </div>
-                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
-                    <div className="text-xs text-muted-foreground">
-                      Concrete design family
-                    </div>
-                    <div className="mt-1 font-medium">
-                      {designResults.codeBasis.concreteFamily}
-                    </div>
-                  </div>
-                </div>
+	                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
+	                    <div className="text-xs text-muted-foreground">
+	                      Concrete design family
+	                    </div>
+	                    <div className="mt-1 font-medium">
+	                      {designResults.codeBasis.concreteFamily}
+	                    </div>
+	                  </div>
+	                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
+	                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+	                      ACI 336 rigidity advice
+	                      <Tooltip>
+	                        <TooltipTrigger
+	                          render={
+	                            <button
+	                              type="button"
+	                              className="text-muted-foreground hover:text-foreground"
+	                              aria-label="ACI 336 rigidity basis"
+	                            >
+	                              <Info size={13} />
+	                            </button>
+	                          }
+	                        />
+	                        <TooltipContent className="max-w-sm text-xs">
+	                          <div className="w-80 max-w-sm space-y-1 text-left">
+	                            <div>
+	                              <MathText>{designResults.rigidity.basis}</MathText>
+	                            </div>
+	                            {designResults.rigidity.details.map((detail) => (
+	                              <div key={detail}>
+	                                <MathText>{detail}</MathText>
+	                              </div>
+	                            ))}
+	                          </div>
+	                        </TooltipContent>
+	                      </Tooltip>
+	                    </div>
+	                    <div className="mt-1 flex items-center gap-2 font-medium">
+	                      <Badge
+	                        variant={
+	                          designResults.rigidity.status === "rigid"
+	                            ? "default"
+	                            : designResults.rigidity.status === "flexible"
+	                            ? "destructive"
+	                            : "outline"
+	                        }
+	                      >
+	                        {designResults.rigidity.status === "unknown"
+	                          ? "Needs ks"
+	                          : designResults.rigidity.status === "rigid"
+	                          ? "Rigid"
+	                          : "Flexible"}
+	                      </Badge>
+	                    </div>
+	                    <div className="mt-1 text-xs text-muted-foreground">
+	                      {designResults.rigidity.elasticLength === null ? (
+	                        <span>Enter <FormulaValue tex="k_s" /> to classify.</span>
+	                      ) : (
+	                        <FormulaValue
+	                          tex={`L_e = ${texNumber(
+	                            units === "SI"
+	                              ? designResults.rigidity.elasticLength
+	                              : designResults.rigidity.elasticLength * M_TO_FT
+	                          )}\\,${unitTex(lengthUnit)}`}
+	                        />
+	                      )}
+	                    </div>
+	                  </div>
+	                </div>
 
-                <div className="grid gap-4 text-xs text-muted-foreground lg:grid-cols-2">
-                  <div className="space-y-1.5">
-                    <div className="font-medium text-foreground">
-                      Code basis
+	                <div className="grid gap-4 text-xs text-muted-foreground lg:grid-cols-2">
+	                  <div className="space-y-1.5">
+	                    <div className="font-medium text-foreground">
+	                      Code basis
                     </div>
 	                    {designResults.codeBasis.references.map((reference) => (
 	                      <div key={reference}>
@@ -2050,11 +2649,11 @@ export default function Home() {
 	                      <div key={assumption}>
 	                        <MathText>{assumption}</MathText>
 	                      </div>
-	                    ))}
-                  </div>
-                </div>
+		                    ))}
+	                  </div>
+	                </div>
 
-                <div className="space-y-2">
+	                <div className="space-y-2">
                   {designResults.checks.map((item) => (
                     <div
                       key={item.id}
@@ -2098,10 +2697,10 @@ export default function Home() {
                             {utilizationText(item)}
                           </div>
                         </div>
-                        <div>
-                          <div className="text-muted-foreground">
-                            Governing
-                          </div>
+	                        <div>
+	                          <div className="text-muted-foreground">
+	                            Governing Load Case
+	                          </div>
 	                          <div className="font-medium">
 	                            <MathText>{item.governingCase}</MathText>
 	                          </div>

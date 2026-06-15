@@ -19,6 +19,7 @@ interface Props {
   step?: number;
   min?: number;
   max?: number;
+  displayDigits?: number;
   tooltip?: React.ReactNode;
 }
 
@@ -31,6 +32,7 @@ export function NumField({
   step = 0.01,
   min = 0,
   max,
+  displayDigits,
   tooltip,
 }: Props) {
   const [focused, setFocused] = useState(false);
@@ -79,7 +81,15 @@ export function NumField({
           step={step}
           min={min}
           max={max}
-          value={focused ? draft : Number.isFinite(value) ? String(value) : ""}
+          value={
+            focused
+              ? draft
+              : Number.isFinite(value)
+              ? displayDigits === undefined
+                ? String(value)
+                : value.toFixed(displayDigits)
+              : ""
+          }
           onFocus={() => {
             setDraft(Number.isFinite(value) ? String(value) : "");
             setFocused(true);
@@ -96,7 +106,7 @@ export function NumField({
               onChange(fallbackValue);
             }
           }}
-          className={unit ? "pr-16" : undefined}
+          className={unit ? "pr-16 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" : "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"}
         />
         {unit ? (
           <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
