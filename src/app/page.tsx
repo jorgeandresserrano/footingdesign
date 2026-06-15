@@ -22,6 +22,7 @@ import {
   useState,
   type ClipboardEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -110,6 +111,36 @@ const MM2_PER_M_TO_IN2_PER_FT = 0.0015500031 / M_TO_FT;
 const PCI_TO_KN_M3 = 271.4471412;
 const APP_DATE = "2026-06-15";
 const APP_VERSION = "2";
+
+function displayDigitsForUnit(unit?: string) {
+  return unit &&
+    [
+      "mm",
+      "mm²",
+      "mm²/m",
+      "mm2/m",
+      "kN",
+      "kN/m",
+      "kPa",
+      "kN·m",
+      "kN-m",
+      "kN·m/m",
+      "kN-m/m",
+    ].includes(unit)
+    ? 0
+    : 3;
+}
+
+function formatForUnit(value: number, unit?: string, digits?: number) {
+  return fmt(value, digits ?? displayDigitsForUnit(unit));
+}
+
+function formatTexForUnit(value: string, unit: string) {
+  const parsed = Number(value.replace(/,/g, ""));
+  return Number.isFinite(parsed)
+    ? formatForUnit(parsed, unit).replace(/,/g, "{,}")
+    : value;
+}
 
 const BUILDING_CODE_OPTIONS: BuildingCode[] = [
   "IBC-2018",
@@ -233,12 +264,18 @@ const MATH_TEXT_PATTERNS: Array<{
   },
   {
     pattern: /N = ([0-9.,-]+) kN/,
-    tex: (match) => `N = ${match[1]}\\,\\mathrm{kN}`,
+    tex: (match) => `N = ${formatTexForUnit(match[1], "kN")}\\,\\mathrm{kN}`,
   },
   {
     pattern: /Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m/,
     tex: (match) =>
-      `M_x = ${match[1]}\\,\\mathrm{kN\\cdot m},\\ M_z = ${match[2]}\\,\\mathrm{kN\\cdot m}`,
+      `M_x = ${formatTexForUnit(
+        match[1],
+        "kN-m"
+      )}\\,\\mathrm{kN\\cdot m},\\ M_z = ${formatTexForUnit(
+        match[2],
+        "kN-m"
+      )}\\,\\mathrm{kN\\cdot m}`,
   },
   {
     pattern: /qmin = ([0-9.,-]+) kPa/,
@@ -251,30 +288,45 @@ const MATH_TEXT_PATTERNS: Array<{
   {
     pattern: /dX = ([0-9.,-]+) mm, dZ = ([0-9.,-]+) mm/,
     tex: (match) =>
-      `d_x = ${match[1]}\\,\\mathrm{mm},\\ d_z = ${match[2]}\\,\\mathrm{mm}`,
+      `d_x = ${formatTexForUnit(match[1], "mm")}\\,\\mathrm{mm},\\ d_z = ${formatTexForUnit(
+        match[2],
+        "mm"
+      )}\\,\\mathrm{mm}`,
   },
   {
     pattern: /Provided AsX = ([0-9.,-]+) mm2\/m/,
-    tex: (match) => `A_{s,x} = ${match[1]}\\,\\mathrm{mm^2/m}`,
+    tex: (match) => `A_{s,x} = ${formatTexForUnit(match[1], "mm2/m")}\\,\\mathrm{mm^2/m}`,
   },
   {
     pattern: /Provided AsZ = ([0-9.,-]+) mm2\/m/,
-    tex: (match) => `A_{s,z} = ${match[1]}\\,\\mathrm{mm^2/m}`,
+    tex: (match) => `A_{s,z} = ${formatTexForUnit(match[1], "mm2/m")}\\,\\mathrm{mm^2/m}`,
   },
   {
     pattern: /Required As = ([0-9.,-]+) mm2\/m; provided As = ([0-9.,-]+) mm2\/m/,
     tex: (match) =>
-      `A_{s,req} = ${match[1]}\\,\\mathrm{mm^2/m};\\ A_s = ${match[2]}\\,\\mathrm{mm^2/m}`,
+      `A_{s,req} = ${formatTexForUnit(
+        match[1],
+        "mm2/m"
+      )}\\,\\mathrm{mm^2/m};\\ A_s = ${formatTexForUnit(
+        match[2],
+        "mm2/m"
+      )}\\,\\mathrm{mm^2/m}`,
   },
   {
     pattern: /c = ([0-9.,-]+) mm, limit = ([0-9.,-]+) mm/,
     tex: (match) =>
-      `c = ${match[1]}\\,\\mathrm{mm},\\ c_{limit} = ${match[2]}\\,\\mathrm{mm}`,
+      `c = ${formatTexForUnit(match[1], "mm")}\\,\\mathrm{mm},\\ c_{limit} = ${formatTexForUnit(
+        match[2],
+        "mm"
+      )}\\,\\mathrm{mm}`,
   },
   {
     pattern: /bo = ([0-9.,-]+) mm, d = ([0-9.,-]+) mm/,
     tex: (match) =>
-      `b_o = ${match[1]}\\,\\mathrm{mm},\\ d = ${match[2]}\\,\\mathrm{mm}`,
+      `b_o = ${formatTexForUnit(match[1], "mm")}\\,\\mathrm{mm},\\ d = ${formatTexForUnit(
+        match[2],
+        "mm"
+      )}\\,\\mathrm{mm}`,
   },
   {
     pattern:
@@ -521,13 +573,17 @@ function roundMaterial(value: number) {
   return Math.round(value * 1000) / 1000;
 }
 
+function roundAutoCalculatedMaterial(value: number) {
+  return Math.round(value);
+}
+
 function concreteElasticModulusFromStrength(
   concreteStrength: number,
   units: UnitSystem
 ) {
   const strength = Math.max(concreteStrength, 0);
-  if (units === "SI") return roundMaterial(4700 * Math.sqrt(strength));
-  return roundMaterial(1802.5 * Math.sqrt(strength));
+  if (units === "SI") return roundAutoCalculatedMaterial(4700 * Math.sqrt(strength));
+  return roundAutoCalculatedMaterial(1802.5 * Math.sqrt(strength));
 }
 
 function convertGeometry(
@@ -689,6 +745,40 @@ function StatusBadge({ status }: { status: CheckStatus }) {
   );
 }
 
+function DenseRow({
+  name,
+  value,
+  unit,
+  reference,
+  highlight,
+}: {
+  name: ReactNode;
+  value: ReactNode;
+  unit: string;
+  reference: ReactNode;
+  highlight?: boolean;
+}) {
+  return (
+    <div
+      className={
+        "grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-3 border-b py-1 transition-colors sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] " +
+        (highlight
+          ? "-mx-2 rounded bg-amber-50 px-2 hover:bg-amber-100 dark:bg-amber-950/20 dark:hover:bg-amber-950/35"
+          : "hover:bg-slate-100 dark:hover:bg-slate-800/60")
+      }
+    >
+      <span className={highlight ? "min-w-0 font-medium" : "min-w-0 text-muted-foreground"}>
+        {name}
+      </span>
+      <span className="tabular-nums">{value}</span>
+      <span className="w-16 text-right text-muted-foreground sm:w-24">{unit}</span>
+      <span className="hidden w-24 text-right text-[10px] text-muted-foreground sm:block">
+        {reference}
+      </span>
+    </div>
+  );
+}
+
 function InlineMath({ tex }: { tex: string }) {
   return (
     <span
@@ -705,6 +795,10 @@ function InlineMath({ tex }: { tex: string }) {
 
 function texNumber(value: number, digits = 3) {
   return fmt(value, digits).replace(/,/g, "{,}");
+}
+
+function texNumberForUnit(value: number, unit: string) {
+  return formatForUnit(value, unit).replace(/,/g, "{,}");
 }
 
 function unitTex(unit: string) {
@@ -780,7 +874,7 @@ function RebarSelect({
                 </button>
               }
             />
-            <TooltipContent className="max-w-xs text-xs">
+            <TooltipContent className="max-w-md text-xs">
               {tooltip}
             </TooltipContent>
           </Tooltip>
@@ -797,15 +891,15 @@ function RebarSelect({
             {() => {
               const option = options.find((item) => item.diameter === selected);
               return option
-                ? `${option.label} (${fmt(option.diameter)} ${unit})`
-                : `${fmt(selected)} ${unit}`;
+                ? `${option.label} (${formatForUnit(option.diameter, unit)} ${unit})`
+                : `${formatForUnit(selected, unit)} ${unit}`;
             }}
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
           {options.map((option) => (
             <SelectItem key={option.label} value={String(option.diameter)}>
-              {option.label} ({fmt(option.diameter)} {unit})
+              {option.label} ({formatForUnit(option.diameter, unit)} {unit})
             </SelectItem>
           ))}
         </SelectContent>
@@ -817,7 +911,7 @@ function RebarSelect({
 function MathValue({
   value,
   unit,
-  digits = 3,
+  digits,
 }: {
   value: number | null;
   unit?: string;
@@ -827,7 +921,7 @@ function MathValue({
   if (!Number.isFinite(value)) return <InlineMath tex="\\infty" />;
   return (
     <>
-      {fmt(value, digits)}
+      {formatForUnit(value, unit, digits)}
       {unit ? ` ${unit}` : ""}
     </>
   );
@@ -837,7 +931,7 @@ function PlainEquationValue({
   symbol,
   value,
   unit,
-  digits = 3,
+  digits,
 }: {
   symbol: string;
   value: number;
@@ -846,7 +940,7 @@ function PlainEquationValue({
 }) {
   return (
     <>
-      <FormulaValue tex={symbol} /> = {fmt(value, digits)} {unit}
+      <FormulaValue tex={symbol} /> = {formatForUnit(value, unit, digits)} {unit}
     </>
   );
 }
@@ -865,12 +959,11 @@ function CheckValue({
   if (value === null) return <>N/A</>;
   if (!Number.isFinite(value)) return <InlineMath tex="\\infty" />;
   const display = displayUnit(unit, units);
-  const resolvedDigits = digits ?? (display === "kN" || display === "kPa" ? 0 : 3);
   return (
     <MathValue
       value={convertedValue(value, unit, units)}
       unit={display}
-      digits={resolvedDigits}
+      digits={digits}
     />
   );
 }
@@ -1118,6 +1211,9 @@ export default function Home() {
     loadCombinationType === "service"
       ? LOAD_CASE_COLUMNS
       : STRENGTH_LOAD_CASE_COLUMNS;
+  const loadCaseCount = loadCases.filter(
+    (loadCase) => !isEmptyLoadCase(loadCase)
+  ).length;
   const setCurrentLoadCases =
     loadCombinationType === "service"
       ? setServiceLoadCases
@@ -1159,10 +1255,6 @@ export default function Home() {
   const maxCompression = Math.max(
     0,
     ...activeLoadCases.map((loadCase) => loadCase.P)
-  );
-  const maxStrengthCompression = Math.max(
-    0,
-    ...activeStrengthLoadCases.map((loadCase) => loadCase.P)
   );
   const designResults = useMemo(() => {
     const siGeometry =
@@ -1225,10 +1317,6 @@ export default function Home() {
         : governing,
     null
   );
-  const governingLoadCase =
-    activeLoadCases.find((loadCase) => loadCase.P === maxCompression)?.name ||
-    "None";
-
   useEffect(() => {
     if (!isSelectingCells) return;
     const stopSelecting = () => {
@@ -1250,9 +1338,7 @@ export default function Home() {
       setMaterials((current) => ({
         ...current,
         concreteStrength: value,
-        concreteElasticModulus: concreteModulusOverridden
-          ? current.concreteElasticModulus
-          : concreteElasticModulusFromStrength(value, units),
+        concreteElasticModulus: concreteElasticModulusFromStrength(value, units),
       }));
       return;
     }
@@ -1321,6 +1407,13 @@ export default function Home() {
     setLoadTableOpen(false);
   };
 
+  const handleLoadCaseDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Escape") return;
+    if (event.target instanceof HTMLInputElement) return;
+    event.preventDefault();
+    closeLoadCaseTable();
+  };
+
 
   const focusLoadCaseCell = (position: CellPosition) => {
     requestAnimationFrame(() => {
@@ -1330,6 +1423,12 @@ export default function Home() {
       cell?.focus();
     });
   };
+
+  useEffect(() => {
+    if (!loadTableOpen || editingCell) return;
+    const position = selectedCells?.end ?? { row: 0, column: 0 };
+    focusLoadCaseCell(position);
+  }, [editingCell, loadTableOpen, selectedCells]);
 
   const moveCellSelection = (row: number, column: number) => {
     const next = {
@@ -1842,12 +1941,16 @@ export default function Home() {
               aria-labelledby="load-table-heading"
               className="flex max-h-[90vh] w-full max-w-5xl flex-col rounded-lg border bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900"
               onClick={(event) => event.stopPropagation()}
+              onKeyDown={handleLoadCaseDialogKeyDown}
             >
               <div className="flex items-start justify-between gap-3 border-b px-5 py-4">
-                <div className="min-w-0">
+                <div className="min-w-0 space-y-1">
                   <h2 id="load-table-heading" className="text-base font-semibold">
                     Load cases
                   </h2>
+                  <p className="text-xs text-muted-foreground">
+                    {loadCaseCount} total
+                  </p>
                 </div>
                 <Button
                   type="button"
@@ -1861,7 +1964,7 @@ export default function Home() {
               </div>
 
               <div
-                className="min-h-0 flex-1 overflow-auto p-5"
+                className="min-h-0 flex-1 overflow-auto overscroll-contain p-5"
                 onCopy={copySelectedCells}
                 onPaste={pasteSelectedLoadCases}
               >
@@ -2006,6 +2109,7 @@ export default function Home() {
                                           event.preventDefault();
                                           setEditingCell(null);
                                           setEditingCellValue("");
+                                          focusLoadCaseCell(position);
                                         }
                                       }}
                                       onPaste={(event) =>
@@ -2232,7 +2336,22 @@ export default function Home() {
                     onChange={(value) =>
                       updateMaterials("concreteElasticModulus", value)
                     }
-                    tooltip="Elastic modulus Ec used only for the ACI 336 rigidity advisory. Auto value follows normalweight concrete from f'c unless overridden."
+                    tooltip={
+                      <div className="space-y-1">
+                        <div>
+                          Elastic modulus <FormulaValue tex="E_c" /> used only
+                          for the ACI 336 rigidity advisory.
+                        </div>
+                        <div className="whitespace-nowrap">
+                          SI: <FormulaValue tex={`E_c = 4700\\sqrt{f'_c}`} /> MPa.
+                        </div>
+                        <div className="whitespace-nowrap">
+                          USC:{" "}
+                          <FormulaValue tex={`E_c = 1802.5\\sqrt{f'_c}`} /> ksi.
+                        </div>
+                        <div>Auto value is rounded to 0 decimals.</div>
+                      </div>
+                    }
                   />
                   {concreteModulusOverridden ? (
                     <Button
@@ -2424,33 +2543,6 @@ export default function Home() {
                     <span className="text-right font-medium">
                       {activeStrengthLoadCases.length}
                     </span>
-                    <span className="text-muted-foreground">
-                      Max compression
-                    </span>
-	                    <span className="text-right font-medium">
-	                      <MathValue value={maxCompression} unit={forceUnit} />
-	                    </span>
-	                    <span className="text-muted-foreground">
-	                      Max strength <FormulaValue tex="P" />
-	                    </span>
-	                    <span className="text-right font-medium">
-	                      <MathValue
-	                        value={maxStrengthCompression}
-	                        unit={forceUnit}
-	                      />
-	                    </span>
-                    <span className="text-muted-foreground">
-                      Governing case
-                    </span>
-	                    <span className="text-right font-medium">
-	                      <MathText>{governingLoadCase}</MathText>
-	                    </span>
-                    <span className="text-muted-foreground">
-                      Bearing case
-                    </span>
-	                    <span className="text-right font-medium">
-	                      <MathText>{governingServiceBearing?.name || "None"}</MathText>
-	                    </span>
                   </div>
                   <Button type="button" onClick={() => setLoadTableOpen(true)}>
                     Edit load table
@@ -2685,29 +2777,6 @@ export default function Home() {
 	                  </div>
 	                </div>
 
-	                <div className="grid gap-4 text-xs text-muted-foreground lg:grid-cols-2">
-	                  <div className="space-y-1.5">
-	                    <div className="font-medium text-foreground">
-	                      Code basis
-                    </div>
-	                    {designResults.codeBasis.references.map((reference) => (
-	                      <div key={reference}>
-	                        <MathText>{reference}</MathText>
-	                      </div>
-	                    ))}
-                  </div>
-                  <div className="space-y-1.5">
-                    <div className="font-medium text-foreground">
-                      Analysis assumptions
-                    </div>
-	                    {designResults.codeBasis.assumptions.map((assumption) => (
-	                      <div key={assumption}>
-	                        <MathText>{assumption}</MathText>
-	                      </div>
-		                    ))}
-	                  </div>
-	                </div>
-
 	                <div className="space-y-2">
                   {designResults.checks.map((item) => (
                     <div
@@ -2783,7 +2852,7 @@ export default function Home() {
                   ))}
                 </div>
 
-                <div className="grid gap-4 lg:grid-cols-2">
+                <div className="space-y-4">
                   <div className="space-y-2">
                     <div className="text-sm font-medium">
                       Service bearing by case
@@ -2888,14 +2957,12 @@ export default function Home() {
 	                                  value={row.flexureX}
 	                                  unit="kN-m/m"
 	                                  units={units}
-	                                  digits={2}
 	                                />{" "}
 	                                /{" "}
 	                                <CheckValue
 	                                  value={row.flexureZ}
 	                                  unit="kN-m/m"
 	                                  units={units}
-	                                  digits={2}
 	                                />
 	                              </TableCell>
                             </TableRow>
@@ -2918,130 +2985,374 @@ export default function Home() {
               <CardHeader className="pb-2">
                 <CardTitle>Values</CardTitle>
                 <CardDescription>
-                  Current model values from geometry inputs.
+                  Current input and computed values for this footing model.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                <div className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
-                  <span className="text-muted-foreground">Model name</span>
-                  <span className="font-medium">{modelName || "Untitled"}</span>
-	                  <span className="text-muted-foreground">Footing plan</span>
-	                  <span className="font-medium">
-	                    <FormulaValue
-	                      tex={`${texNumber(geometry.footingLength)} \\times ${texNumber(
-	                        geometry.footingWidth
-	                      )}\\,${unitTex(lengthUnit)}`}
-	                    />
-	                  </span>
-                  <span className="text-muted-foreground">
-                    Footing concrete volume
-                  </span>
-	                  <span className="font-medium">
-	                    <MathValue value={concreteVolume} unit={`${lengthUnit}³`} />
-	                  </span>
-                  <span className="text-muted-foreground">
-                    Pedestal footprint
-                  </span>
-	                  <span className="font-medium">
-	                    <FormulaValue
-	                      tex={`${texNumber(geometry.pedestalLength)} \\times ${texNumber(
-	                        geometry.pedestalWidth
-	                      )}\\,${unitTex(lengthUnit)}`}
-	                    />
-	                  </span>
-                  <span className="text-muted-foreground">
-                    Pedestal offset
-                  </span>
-	                  <span className="font-medium">
-	                    <FormulaValue
-	                      tex={`x = ${texNumber(pedestalOffsetX)}\\,${unitTex(
-	                        lengthUnit
-	                      )},\\ z = ${texNumber(pedestalOffsetZ)}\\,${unitTex(
-	                        lengthUnit
-	                      )}`}
-	                    />
-	                  </span>
-                  <span className="text-muted-foreground">
-                    Concrete strength
-                  </span>
-	                  <span className="font-medium">
-	                    <MathValue
-	                      value={materials.concreteStrength}
-	                      unit={strengthUnit}
-	                    />
-	                  </span>
-                  <span className="text-muted-foreground">Rebar yield</span>
-	                  <span className="font-medium">
-	                    <MathValue value={materials.rebarYield} unit={strengthUnit} />
-	                  </span>
-                  <span className="text-muted-foreground">Clear cover</span>
-	                  <span className="font-medium">
-	                    <MathValue value={materials.clearCover} unit={coverUnit} />
-	                  </span>
-                  <span className="text-muted-foreground">
-                    Allowable bearing
-                  </span>
-	                  <span className="font-medium">
-	                    <MathValue
-	                      value={materials.allowableBearing}
-	                      unit={bearingUnit}
-	                    />
-	                  </span>
-                  <span className="text-muted-foreground">X reinforcement</span>
-	                  <span className="font-medium">
-	                    <FormulaValue
-	                      tex={`${texNumber(
-	                        reinforcement.barDiameterX
-	                      )}\\,${unitTex(coverUnit)}\\;@\\;${texNumber(
-	                        reinforcement.barSpacingX
-	                      )}\\,${unitTex(coverUnit)}`}
-	                    />
-	                  </span>
-                  <span className="text-muted-foreground">Z reinforcement</span>
-	                  <span className="font-medium">
-	                    <FormulaValue
-	                      tex={`${texNumber(
-	                        reinforcement.barDiameterZ
-	                      )}\\,${unitTex(coverUnit)}\\;@\\;${texNumber(
-	                        reinforcement.barSpacingZ
-	                      )}\\,${unitTex(coverUnit)}`}
-	                    />
-	                  </span>
-                  <span className="text-muted-foreground">
-                    Load cases
-                  </span>
-                  <span className="font-medium">
-                    {activeLoadCases.length} service /{" "}
-                    {activeStrengthLoadCases.length} strength
-                  </span>
-                  <span className="text-muted-foreground">Max compression</span>
-	                  <span className="font-medium">
-	                    <MathValue value={maxCompression} unit={forceUnit} />
-	                  </span>
-                  <span className="text-muted-foreground">Governing case</span>
-	                  <span className="font-medium">
-	                    <MathText>{governingLoadCase}</MathText>
-	                  </span>
-                  <span className="text-muted-foreground">
-                    Max service bearing
-                  </span>
-	                  <span className="font-medium">
-	                    <CheckValue
-	                      value={governingServiceBearing?.maxBearing ?? null}
-	                      unit="kPa"
-	                      units={units}
-	                    />
-	                  </span>
-                  <span className="text-muted-foreground">Overall status</span>
-                  <span className="font-medium">
-                    {statusLabel(designResults.summary.overallStatus)}
-                  </span>
+              <CardContent className="space-y-4">
+                <div>
+                  <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Inputs
+                  </div>
+                  <div className="text-xs">
+                    {[
+                      {
+                        k: "A-qa",
+                        name: (
+                          <>
+                            <FormulaValue tex="q_a" /> - allowable bearing
+                          </>
+                        ),
+                        value: formatForUnit(materials.allowableBearing, bearingUnit),
+                        unit: bearingUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "C-cover",
+                        name: (
+                          <>
+                            <FormulaValue tex="c_c" /> - clear cover
+                          </>
+                        ),
+                        value: formatForUnit(materials.clearCover, coverUnit),
+                        unit: coverUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "E-Ec",
+                        name: (
+                          <>
+                            <FormulaValue tex="E_c" /> - concrete modulus
+                          </>
+                        ),
+                        value: formatForUnit(materials.concreteElasticModulus, strengthUnit),
+                        unit: strengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "F-fc",
+                        name: (
+                          <>
+                            <FormulaValue tex="f'_c" /> - concrete strength
+                          </>
+                        ),
+                        value: formatForUnit(materials.concreteStrength, strengthUnit),
+                        unit: strengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "F-fy",
+                        name: (
+                          <>
+                            <FormulaValue tex="f_y" /> - rebar yield
+                          </>
+                        ),
+                        value: formatForUnit(materials.rebarYield, strengthUnit),
+                        unit: strengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "F-footing-plan",
+                        name: <>Footing plan</>,
+                        value: (
+                          <FormulaValue
+                            tex={`${texNumber(geometry.footingLength)} \\times ${texNumber(
+                              geometry.footingWidth
+                            )}`}
+                          />
+                        ),
+                        unit: lengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "G-gamma-c",
+                        name: (
+                          <>
+                            <FormulaValue tex={"\\gamma_c"} /> - concrete unit weight
+                          </>
+                        ),
+                        value: formatForUnit(materials.concreteUnitWeight, unitWeightUnit),
+                        unit: unitWeightUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "K-ks",
+                        name: (
+                          <>
+                            <FormulaValue tex="k_s" /> - subgrade reaction modulus
+                          </>
+                        ),
+                        value: formatForUnit(materials.subgradeReactionModulus, subgradeReactionUnit),
+                        unit: subgradeReactionUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "L-load-cases",
+                        name: <>Load cases</>,
+                        value: `${activeLoadCases.length} / ${activeStrengthLoadCases.length}`,
+                        unit: "svc/str",
+                        reference: null,
+                      },
+                      {
+                        k: "M-model-name",
+                        name: <>Model name</>,
+                        value: modelName || "Untitled",
+                        unit: "",
+                        reference: null,
+                      },
+                      {
+                        k: "M-mu",
+                        name: (
+                          <>
+                            <FormulaValue tex={"\\mu"} /> - friction coefficient
+                          </>
+                        ),
+                        value: fmt(materials.soilFrictionCoefficient, 2),
+                        unit: "",
+                        reference: null,
+                      },
+                      {
+                        k: "P-pedestal-footprint",
+                        name: <>Pedestal footprint</>,
+                        value: (
+                          <FormulaValue
+                            tex={`${texNumber(geometry.pedestalLength)} \\times ${texNumber(
+                              geometry.pedestalWidth
+                            )}`}
+                          />
+                        ),
+                        unit: lengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "P-pedestal-offset",
+                        name: <>Pedestal offset</>,
+                        value: (
+                          <FormulaValue
+                            tex={`x=${texNumber(pedestalOffsetX)},\\ z=${texNumber(pedestalOffsetZ)}`}
+                          />
+                        ),
+                        unit: lengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "T-thickness",
+                        name: (
+                          <>
+                            <FormulaValue tex="h" /> - footing thickness
+                          </>
+                        ),
+                        value: formatForUnit(geometry.footingThickness, lengthUnit),
+                        unit: lengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "X-rebar",
+                        name: <>X reinforcement</>,
+                        value: (
+                          <FormulaValue
+                            tex={`${texNumberForUnit(
+                              reinforcement.barDiameterX,
+                              coverUnit
+                            )}@${texNumberForUnit(reinforcement.barSpacingX, coverUnit)}`}
+                          />
+                        ),
+                        unit: coverUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "Z-rebar",
+                        name: <>Z reinforcement</>,
+                        value: (
+                          <FormulaValue
+                            tex={`${texNumberForUnit(
+                              reinforcement.barDiameterZ,
+                              coverUnit
+                            )}@${texNumberForUnit(reinforcement.barSpacingZ, coverUnit)}`}
+                          />
+                        ),
+                        unit: coverUnit,
+                        reference: null,
+                      },
+                    ]
+                      .sort((a, b) => a.k.localeCompare(b.k))
+                      .map((row) => (
+                        <DenseRow
+                          key={row.k}
+                          name={row.name}
+                          value={row.value}
+                          unit={row.unit}
+                          reference={row.reference}
+                        />
+                      ))}
+                  </div>
                 </div>
-                <Separator />
-                <p className="text-xs text-muted-foreground">
-                  Values feed the calculation engine shown in Design checks.
-                  Service/stability and strength cases are separate by design.
-                </p>
+
+                <div>
+                  <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Computed
+                  </div>
+                  <div className="text-xs">
+                    {[
+                      {
+                        k: "A-As-min-x",
+                        name: (
+                          <>
+                            <FormulaValue tex="A_{s,min,x}" /> - minimum X steel
+                          </>
+                        ),
+                        value: formatForUnit(
+                          convertedValue(designResults.summary.minimumAsX, "mm²/m", units),
+                          units === "SI" ? "mm²/m" : "in²/ft"
+                        ),
+                        unit: units === "SI" ? "mm²/m" : "in²/ft",
+                        reference: null,
+                      },
+                      {
+                        k: "A-As-min-z",
+                        name: (
+                          <>
+                            <FormulaValue tex="A_{s,min,z}" /> - minimum Z steel
+                          </>
+                        ),
+                        value: formatForUnit(
+                          convertedValue(designResults.summary.minimumAsZ, "mm²/m", units),
+                          units === "SI" ? "mm²/m" : "in²/ft"
+                        ),
+                        unit: units === "SI" ? "mm²/m" : "in²/ft",
+                        reference: null,
+                      },
+                      {
+                        k: "A-As-x",
+                        name: (
+                          <>
+                            <FormulaValue tex="A_{s,x}" /> - provided X steel
+                          </>
+                        ),
+                        value: formatForUnit(
+                          convertedValue(designResults.summary.providedAsX, "mm²/m", units),
+                          units === "SI" ? "mm²/m" : "in²/ft"
+                        ),
+                        unit: units === "SI" ? "mm²/m" : "in²/ft",
+                        reference: null,
+                      },
+                      {
+                        k: "A-As-z",
+                        name: (
+                          <>
+                            <FormulaValue tex="A_{s,z}" /> - provided Z steel
+                          </>
+                        ),
+                        value: formatForUnit(
+                          convertedValue(designResults.summary.providedAsZ, "mm²/m", units),
+                          units === "SI" ? "mm²/m" : "in²/ft"
+                        ),
+                        unit: units === "SI" ? "mm²/m" : "in²/ft",
+                        reference: null,
+                      },
+                      {
+                        k: "D-dx",
+                        name: (
+                          <>
+                            <FormulaValue tex="d_x" /> - effective depth X
+                          </>
+                        ),
+                        value: formatForUnit(
+                          convertedValue(designResults.summary.effectiveDepthX, "mm", units),
+                          coverUnit
+                        ),
+                        unit: coverUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "D-dz",
+                        name: (
+                          <>
+                            <FormulaValue tex="d_z" /> - effective depth Z
+                          </>
+                        ),
+                        value: formatForUnit(
+                          convertedValue(designResults.summary.effectiveDepthZ, "mm", units),
+                          coverUnit
+                        ),
+                        unit: coverUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "P-Pmax",
+                        name: (
+                          <>
+                            <FormulaValue tex="P_{max}" /> - max compression
+                          </>
+                        ),
+                        value: formatForUnit(maxCompression, forceUnit),
+                        unit: forceUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "Q-qmax",
+                        name: (
+                          <>
+                            <FormulaValue tex="q_{max}" /> - max service bearing
+                          </>
+                        ),
+                        value:
+                          governingServiceBearing === null
+                            ? "N/A"
+                            : formatForUnit(
+                                convertedValue(governingServiceBearing.maxBearing, "kPa", units),
+                                bearingUnit
+                              ),
+                        unit: bearingUnit,
+                        reference: null,
+                        highlight: true,
+                      },
+                      {
+                        k: "S-status",
+                        name: <>Overall status</>,
+                        value: statusLabel(designResults.summary.overallStatus),
+                        unit: "",
+                        reference: null,
+                        highlight: designResults.summary.overallStatus !== "pass",
+                      },
+                      {
+                        k: "V-volume",
+                        name: (
+                          <>
+                            <FormulaValue tex="V_c" /> - concrete volume
+                          </>
+                        ),
+                        value: formatForUnit(concreteVolume, `${lengthUnit}³`),
+                        unit: `${lengthUnit}³`,
+                        reference: null,
+                      },
+                      {
+                        k: "W-self",
+                        name: (
+                          <>
+                            <FormulaValue tex="W_f" /> - footing self weight
+                          </>
+                        ),
+                        value: formatForUnit(
+                          convertedValue(designResults.summary.footingSelfWeight, "kN", units),
+                          forceUnit
+                        ),
+                        unit: forceUnit,
+                        reference: null,
+                      },
+                    ]
+                      .sort((a, b) => a.k.localeCompare(b.k))
+                      .map((row) => (
+                        <DenseRow
+                          key={row.k}
+                          name={row.name}
+                          value={row.value}
+                          unit={row.unit}
+                          reference={row.reference}
+                          highlight={row.highlight}
+                        />
+                      ))}
+                  </div>
+                </div>
               </CardContent>
             </Card>
           </div>

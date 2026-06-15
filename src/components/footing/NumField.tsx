@@ -67,7 +67,7 @@ export function NumField({
                 </button>
               }
             />
-            <TooltipContent className="max-w-xs text-xs">
+            <TooltipContent className="max-w-md text-xs">
               {tooltip}
             </TooltipContent>
           </Tooltip>

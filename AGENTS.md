@@ -72,6 +72,10 @@ All Inputs or Computed values shown in value tables must be ordered alphabetical
 
 All formulas and variables must use katex symbols.
 
+## 7. Tooltips
+
+Tooltips must use a single-column layout. Do not arrange tooltip text, formulas, or icons side-by-side in multiple columns.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
