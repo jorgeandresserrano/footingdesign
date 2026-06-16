@@ -10,6 +10,7 @@ import type {
   FootingDesignResult,
   LoadStandard,
   ReinforcementInputs,
+  SoilTreatmentMode,
 } from "./footingEngine";
 
 export type FootingReportUnitSystem = "SI" | "USC";
@@ -20,6 +21,7 @@ export interface FootingReportState {
   buildingCode: BuildingCode;
   loadStandard: LoadStandard;
   concreteStandard: ConcreteStandard;
+  soilTreatmentMode: SoilTreatmentMode;
   geometry: EngineGeometry;
   materials: EngineMaterials;
   reinforcement: ReinforcementInputs;
@@ -81,7 +83,7 @@ export function createFootingCalculationBriefHtml(state: FootingReportState) {
     { id: "load-cases", label: "Load cases" },
     { id: "check-summary", label: "Check summary" },
     { id: "calculation-section", label: "Calculation section" },
-    { id: "geometry-self-weight", label: "Geometry and self-weight", level: 3 },
+    { id: "geometry-self-weight", label: "Geometry and foundation weight", level: 3 },
     { id: "load-transfer-bearing", label: "Load transfer and bearing", level: 3 },
     { id: "sliding-rigidity", label: "Sliding and rigidity", level: 3 },
     { id: "reinforcement-depth", label: "Reinforcement and depth", level: 3 },
@@ -558,17 +560,21 @@ function calculationSection(
 ) {
   const data = derived(state);
   return `
-    <h3 class="calc-sub" id="geometry-self-weight">Geometry and Self-Weight</h3>
+    <h3 class="calc-sub" id="geometry-self-weight">Geometry and Foundation Weight</h3>
     ${calc("Footing plan properties", [
       String.raw`A = B_x B_z`,
       String.raw`A = ${q(state.geometry.footingLength, "m")} \times ${q(state.geometry.footingWidth, "m")} = ${q(data.area, "m^2")}`,
+      String.raw`A_s = A - A_p = ${q(data.soilArea, "m^2")}`,
       String.raw`S_x = \frac{B_x B_z^2}{6} = ${q(data.sx, "m^3")}`,
       String.raw`S_z = \frac{B_z B_x^2}{6} = ${q(data.sz, "m^3")}`,
     ])}
-    ${calc("Concrete volume and self-weight", [
+    ${calc("Concrete and soil weight", [
       String.raw`V_c = B_x B_z h`,
       String.raw`V_c = ${q(state.geometry.footingLength, "m")} \times ${q(state.geometry.footingWidth, "m")} \times ${q(state.geometry.footingThickness, "m")} = ${q(data.volume, "m^3")}`,
       String.raw`W_f = V_c \gamma_c = ${q(data.volume, "m^3")} \times ${q(state.materials.concreteUnitWeight, "kN/m^3")} = ${q(state.results.summary.footingSelfWeight, "kN")}`,
+      String.raw`V_s = A_s h_s = ${q(data.soilArea, "m^2")} \times ${q(state.geometry.soilCoverDepth, "m")} = ${q(data.soilVolume, "m^3")}`,
+      String.raw`W_s = V_s \gamma_s = ${q(data.soilVolume, "m^3")} \times ${q(state.materials.soilUnitWeight, "kN/m^3")} = ${q(state.results.summary.soilOverburdenWeight, "kN")}`,
+      String.raw`W_{svc} = W_f + \eta_{s,svc}W_s = ${q(state.results.summary.appliedServiceFoundationWeight, "kN")}`,
     ])}
 
     <h3 class="calc-sub" id="load-transfer-bearing">Load Transfer and Bearing</h3>
@@ -669,14 +675,23 @@ function serviceBearingCalculations(state: FootingReportState) {
   return state.serviceLoadCases
     .map((loadCase) => {
       const row = state.results.serviceBearing.find((item) => item.id === loadCase.id);
-      const moments = loadMomentsAtFootingCenter(loadCase, state.geometry);
+      const loadMoments = loadMomentsAtFootingCenter(loadCase, state.geometry);
       const data = derived(state);
+      const soilFactors = soilTreatmentFactors(state.soilTreatmentMode);
+      const moments = addSoilWeightMoments(
+        loadMoments,
+        state.results.summary.soilOverburdenWeight,
+        data.soilCentroidX,
+        data.soilCentroidZ,
+        soilFactors.service
+      );
       return calc(`Service bearing - ${loadName(loadCase)}`, [
-        String.raw`M_x^* = M_x + H_z h_p + P e_z`,
-        String.raw`M_x^* = ${q(loadCase.Mx, "kN m")} + ${q(loadCase.Hz, "kN")}${q(state.geometry.pedestalHeight, "m")} + ${q(loadCase.P, "kN")}${q(state.geometry.pedestalOffsetZ, "m")} = ${q(moments.mx, "kN m")}`,
-        String.raw`M_z^* = M_z - H_x h_p - P e_x`,
-        String.raw`M_z^* = ${q(loadCase.Mz, "kN m")} - ${q(loadCase.Hx, "kN")}${q(state.geometry.pedestalHeight, "m")} - ${q(loadCase.P, "kN")}${q(state.geometry.pedestalOffsetX, "m")} = ${q(moments.mz, "kN m")}`,
-        String.raw`N = P + W_f = ${q(loadCase.P, "kN")} + ${q(state.results.summary.footingSelfWeight, "kN")} = ${q(row?.axial ?? 0, "kN")}`,
+        String.raw`\eta_{s,svc} = ${num(soilFactors.service, 0)}`,
+        String.raw`M_x^* = M_x + H_z h_p + P e_z + \eta_{s,svc}W_s z_s`,
+        String.raw`M_x^* = ${q(loadCase.Mx, "kN m")} + ${q(loadCase.Hz, "kN")}${q(state.geometry.pedestalHeight, "m")} + ${q(loadCase.P, "kN")}${q(state.geometry.pedestalOffsetZ, "m")} + ${num(soilFactors.service, 0)}${q(state.results.summary.soilOverburdenWeight, "kN")}${q(data.soilCentroidZ, "m")} = ${q(moments.mx, "kN m")}`,
+        String.raw`M_z^* = M_z - H_x h_p - P e_x - \eta_{s,svc}W_s x_s`,
+        String.raw`M_z^* = ${q(loadCase.Mz, "kN m")} - ${q(loadCase.Hx, "kN")}${q(state.geometry.pedestalHeight, "m")} - ${q(loadCase.P, "kN")}${q(state.geometry.pedestalOffsetX, "m")} - ${num(soilFactors.service, 0)}${q(state.results.summary.soilOverburdenWeight, "kN")}${q(data.soilCentroidX, "m")} = ${q(moments.mz, "kN m")}`,
+        String.raw`N = P + W_f + \eta_{s,svc}W_s = ${q(loadCase.P, "kN")} + ${q(state.results.summary.footingSelfWeight, "kN")} + ${num(soilFactors.service, 0)}${q(state.results.summary.soilOverburdenWeight, "kN")} = ${q(row?.axial ?? 0, "kN")}`,
         String.raw`q = \frac{N}{A} \pm \frac{M_x^*}{S_x} \pm \frac{M_z^*}{S_z}`,
         String.raw`q_{max} = ${q(row?.maxBearing ?? 0, "kPa")};\quad q_{min} = ${q(row?.minBearing ?? 0, "kPa")};\quad A=${q(data.area, "m^2")},\;S_x=${q(data.sx, "m^3")},\;S_z=${q(data.sz, "m^3")}`,
       ]);
@@ -691,14 +706,14 @@ function slidingCalculations(state: FootingReportState) {
   return state.serviceLoadCases
     .map((loadCase) => {
       const horizontal = Math.hypot(loadCase.Hx, loadCase.Hz);
-      const normal = loadCase.P + state.results.summary.footingSelfWeight;
+      const normal = loadCase.P + state.results.summary.appliedServiceFoundationWeight;
       const resisting = Math.max(normal, 0) * Math.max(state.materials.soilFrictionCoefficient, 0);
       const available = resisting / SERVICE_SLIDING_SAFETY_FACTOR;
       const fs = horizontal > EPS ? resisting / horizontal : Number.POSITIVE_INFINITY;
       return calc(`Service sliding - ${loadName(loadCase)}`, [
         String.raw`H = \sqrt{H_x^2 + H_z^2}`,
         String.raw`H = \sqrt{${q(loadCase.Hx, "kN")}^2 + ${q(loadCase.Hz, "kN")}^2} = ${q(horizontal, "kN")}`,
-        String.raw`N = P + W_f = ${q(normal, "kN")}`,
+        String.raw`N = P + W_f + \eta_{s,svc}W_s = ${q(normal, "kN")}`,
         String.raw`H_{allow} = \frac{\mu N}{1.5} = \frac{${num(state.materials.soilFrictionCoefficient, 2)} \times ${q(normal, "kN")}}{1.5} = ${q(available, "kN")}`,
         String.raw`FS = ${Number.isFinite(fs) ? num(fs, 2) : String.raw`\infty`}`,
       ]);
@@ -751,11 +766,26 @@ function strengthPressureCalculations(state: FootingReportState) {
   return state.strengthLoadCases
     .map((loadCase) => {
       const row = state.results.strengthCases.find((item) => item.id === loadCase.id);
-      const moments = loadMomentsAtFootingCenter(loadCase, state.geometry);
+      const loadMoments = loadMomentsAtFootingCenter(loadCase, state.geometry);
+      const data = derived(state);
+      const factor = Math.max(loadCase.foundationDeadLoadFactor, 0);
+      const soilFactors = soilTreatmentFactors(state.soilTreatmentMode);
+      const grossMoments = addSoilWeightMoments(
+        loadMoments,
+        state.results.summary.soilOverburdenWeight,
+        data.soilCentroidX,
+        data.soilCentroidZ,
+        factor * soilFactors.strength
+      );
       return calc(`Strength actions - ${loadName(loadCase)}`, [
-        String.raw`M_x^* = M_x + H_z h_p + P e_z = ${q(moments.mx, "kN m")}`,
-        String.raw`M_z^* = M_z - H_x h_p - P e_x = ${q(moments.mz, "kN m")}`,
-        String.raw`q_{net} = \frac{P}{A} \pm \frac{M_x^*}{S_x} \pm \frac{M_z^*}{S_z}`,
+        String.raw`D_f = ${num(factor, 3)}`,
+        String.raw`\eta_{s,u} = ${num(soilFactors.strength, 0)}`,
+        String.raw`M_{x,g}^* = M_x + H_z h_p + P e_z + D_f\eta_{s,u}W_s z_s = ${q(grossMoments.mx, "kN m")}`,
+        String.raw`M_{z,g}^* = M_z - H_x h_p - P e_x - D_f\eta_{s,u}W_s x_s = ${q(grossMoments.mz, "kN m")}`,
+        String.raw`N_g = P + D_f(W_f + \eta_{s,u}W_s)`,
+        String.raw`q_g = \frac{N_g}{A} \pm \frac{M_{x,g}^*}{S_x} \pm \frac{M_{z,g}^*}{S_z}`,
+        String.raw`q_{g,max} = ${q(row?.maxGrossBearing ?? 0, "kPa")};\quad q_{g,min} = ${q(row?.minGrossBearing ?? 0, "kPa")}`,
+        String.raw`q_{net} = q_g - D_f\gamma_c h - D_f\eta_{s,u}\gamma_s h_s\quad\text{over soil rectangles}`,
         String.raw`q_{net,max} = ${q(row?.maxNetPressure ?? 0, "kPa")};\quad q_{net,min} = ${q(row?.minNetPressure ?? 0, "kPa")}`,
         String.raw`M_{u,x} = ${q(row?.flexureX ?? 0, "kN m/m")};\quad M_{u,z} = ${q(row?.flexureZ ?? 0, "kN m/m")}`,
         String.raw`V_{u,x} = ${q(row?.oneWayShearX ?? 0, "kN/m")};\quad V_{u,z} = ${q(row?.oneWayShearZ ?? 0, "kN/m")}`,
@@ -874,9 +904,9 @@ function checkCalc(state: FootingReportState, id: string) {
 }
 
 function detailTex(detail: string) {
-  const normal = detail.match(/^N = ([0-9.,-]+) kN including footing self-weight\.$/);
+  const normal = detail.match(/^N = ([0-9.,-]+) kN including footing self-weight(?: and (?:applied service )?soil overburden)?\.$/);
   if (normal) {
-    return String.raw`N = ${formatTexNumber(normal[1])}\,\mathrm{kN}\quad\text{including footing self-weight}`;
+    return String.raw`N = ${formatTexNumber(normal[1])}\,\mathrm{kN}\quad\text{including footing self-weight and applied service soil overburden}`;
   }
 
   const moments = detail.match(/^Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m at footing center\.$/);
@@ -990,14 +1020,17 @@ function inputRows(state: FootingReportState): ReportRow[] {
     { key: "F-fy", symbol: "f_y", label: "rebar yield", value: f(convert(state.materials.rebarYield, "MPa", state.units), 3), unit: u.stress },
     { key: "H-h", symbol: "h", label: "footing thickness", value: f(convert(state.geometry.footingThickness, "m", state.units), 3), unit: u.length },
     { key: "H-hp", symbol: "h_p", label: "pedestal height", value: f(convert(state.geometry.pedestalHeight, "m", state.units), 3), unit: u.length },
+    { key: "H-hs", symbol: "h_s", label: "soil cover depth", value: f(convert(state.geometry.soilCoverDepth, "m", state.units), 3), unit: u.length },
     { key: "K-ks", symbol: "k_s", label: "subgrade reaction", value: f(convert(state.materials.subgradeReactionModulus, "kN/m3", state.units), 3), unit: u.subgrade },
     { key: "L-Lpx", symbol: "L_{p,x}", label: "pedestal length", value: f(convert(state.geometry.pedestalLength, "m", state.units), 3), unit: u.length },
     { key: "L-Lpz", symbol: "L_{p,z}", label: "pedestal width", value: f(convert(state.geometry.pedestalWidth, "m", state.units), 3), unit: u.length },
     { key: "S-sx", symbol: "s_x", label: "X bar spacing", value: f(convert(state.reinforcement.barSpacingX, "mm", state.units), 3), unit: u.cover },
     { key: "S-sz", symbol: "s_z", label: "Z bar spacing", value: f(convert(state.reinforcement.barSpacingZ, "mm", state.units), 3), unit: u.cover },
+    { key: "S-soil-treatment", symbol: "\\eta_s", label: "soil treatment", value: soilTreatmentLabel(state.soilTreatmentMode), unit: "" },
     { key: "X-ex", symbol: "e_x", label: "pedestal offset X", value: f(convert(state.geometry.pedestalOffsetX, "m", state.units), 3), unit: u.length },
     { key: "Z-ez", symbol: "e_z", label: "pedestal offset Z", value: f(convert(state.geometry.pedestalOffsetZ, "m", state.units), 3), unit: u.length },
     { key: "zz-gamma", symbol: "\\gamma_c", label: "concrete unit weight", value: f(convert(state.materials.concreteUnitWeight, "kN/m3", state.units), 3), unit: u.unitWeight },
+    { key: "zz-gamma-s", symbol: "\\gamma_s", label: "soil unit weight", value: f(convert(state.materials.soilUnitWeight, "kN/m3", state.units), 3), unit: u.unitWeight },
     { key: "zz-mu", symbol: "\\mu", label: "soil friction coefficient", value: f(state.materials.soilFrictionCoefficient, 3), unit: "" },
   ];
 }
@@ -1022,6 +1055,8 @@ function computedRows(state: FootingReportState): ReportRow[] {
     { key: "S-status", symbol: "\\text{Status}", label: "overall status", value: statusLabel(state.results.summary.overallStatus), unit: "" },
     { key: "V-volume", symbol: "V_c", label: "concrete volume", value: f(convert(data.volume, "m3", state.units), 3), unit: u.volume },
     { key: "W-self", symbol: "W_f", label: "footing self-weight", value: f(convert(state.results.summary.footingSelfWeight, "kN", state.units), 3), unit: u.force },
+    { key: "W-soil", symbol: "W_s", label: "soil overburden", value: f(convert(state.results.summary.soilOverburdenWeight, "kN", state.units), 3), unit: u.force },
+    { key: "W-total", symbol: "W_{svc}", label: "applied service foundation weight", value: f(convert(state.results.summary.appliedServiceFoundationWeight, "kN", state.units), 3), unit: u.force },
   ];
 }
 
@@ -1142,6 +1177,49 @@ function derived(state: FootingReportState) {
   const width = positive(state.geometry.footingWidth);
   const area = length * width;
   const volume = area * positive(state.geometry.footingThickness);
+  const footing = {
+    xMin: -length / 2,
+    xMax: length / 2,
+    zMin: -width / 2,
+    zMax: width / 2,
+  };
+  const pedestal = {
+    xMin: Math.max(
+      footing.xMin,
+      state.geometry.pedestalOffsetX - state.geometry.pedestalLength / 2
+    ),
+    xMax: Math.min(
+      footing.xMax,
+      state.geometry.pedestalOffsetX + state.geometry.pedestalLength / 2
+    ),
+    zMin: Math.max(
+      footing.zMin,
+      state.geometry.pedestalOffsetZ - state.geometry.pedestalWidth / 2
+    ),
+    zMax: Math.min(
+      footing.zMax,
+      state.geometry.pedestalOffsetZ + state.geometry.pedestalWidth / 2
+    ),
+  };
+  const pedestalArea =
+    pedestal.xMax > pedestal.xMin && pedestal.zMax > pedestal.zMin
+      ? (pedestal.xMax - pedestal.xMin) * (pedestal.zMax - pedestal.zMin)
+      : 0;
+  const pedestalFirstX =
+    pedestalArea > EPS
+      ? ((pedestal.xMax ** 2 - pedestal.xMin ** 2) / 2) *
+        (pedestal.zMax - pedestal.zMin)
+      : 0;
+  const pedestalFirstZ =
+    pedestalArea > EPS
+      ? ((pedestal.zMax ** 2 - pedestal.zMin ** 2) / 2) *
+        (pedestal.xMax - pedestal.xMin)
+      : 0;
+  const soilArea = Math.max(area - pedestalArea, 0);
+  const soilCoverDepth = Math.max(state.geometry.soilCoverDepth, 0);
+  const soilVolume = soilArea * soilCoverDepth;
+  const soilCentroidX = soilArea > EPS ? -pedestalFirstX / soilArea : 0;
+  const soilCentroidZ = soilArea > EPS ? -pedestalFirstZ / soilArea : 0;
   const sx = (length * width ** 2) / 6;
   const sz = (width * length ** 2) / 6;
   const dXSingle = Math.max(
@@ -1192,6 +1270,10 @@ function derived(state: FootingReportState) {
   return {
     area,
     volume,
+    soilArea,
+    soilVolume,
+    soilCentroidX,
+    soilCentroidZ,
     sx,
     sz,
     dXSingle,
@@ -1214,6 +1296,33 @@ function loadMomentsAtFootingCenter(loadCase: EngineLoadCase, geometry: EngineGe
       loadCase.Mz -
       loadCase.Hx * geometry.pedestalHeight -
       loadCase.P * geometry.pedestalOffsetX,
+  };
+}
+
+function addSoilWeightMoments(
+  moments: ReturnType<typeof loadMomentsAtFootingCenter>,
+  soilWeight: number,
+  soilCentroidX: number,
+  soilCentroidZ: number,
+  factor = 1
+) {
+  const factoredSoilWeight = factor * soilWeight;
+  return {
+    mx: moments.mx + factoredSoilWeight * soilCentroidZ,
+    mz: moments.mz - factoredSoilWeight * soilCentroidX,
+  };
+}
+
+function soilTreatmentLabel(mode: SoilTreatmentMode) {
+  if (mode === "ignored") return "Ignored";
+  if (mode === "full") return "Full including strength";
+  return "Service/stability";
+}
+
+function soilTreatmentFactors(mode: SoilTreatmentMode) {
+  return {
+    service: mode === "ignored" ? 0 : 1,
+    strength: mode === "full" ? 1 : 0,
   };
 }
 
@@ -1446,7 +1555,7 @@ function mathText(text: string) {
   const html = esc(text)
     .replace(/q = P\/A \+\/- Mx\/Sx \+\/- Mz\/Sz/g, () => token(String.raw`q = \frac{P}{A}\pm\frac{M_x}{S_x}\pm\frac{M_z}{S_z}`))
     .replace(/H &lt;= mu N \/ 1.5/g, () => token(String.raw`H \le \frac{\mu N}{1.5}`))
-    .replace(/N = ([0-9.,-]+) kN including footing self-weight\./g, (_, n) => token(String.raw`N = ${formatTexNumber(n)}\,\mathrm{kN}\quad\text{including footing self-weight}`))
+    .replace(/N = ([0-9.,-]+) kN including footing self-weight(?: and (?:applied service )?soil overburden)?\./g, (_, n) => token(String.raw`N = ${formatTexNumber(n)}\,\mathrm{kN}\quad\text{including footing self-weight and applied service soil overburden}`))
     .replace(/Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m at footing center\./g, (_, mx, mz) => token(String.raw`M_x = ${formatTexNumber(mx)}\,\mathrm{kN\cdot m},\quad M_z = ${formatTexNumber(mz)}\,\mathrm{kN\cdot m}\quad\text{at footing center}`))
     .replace(/qmin = ([0-9.,-]+) kPa\./g, (_, qmin) => token(String.raw`q_{min} = ${formatTexNumber(qmin)}\,\mathrm{kPa}`))
     .replace(/FS = ([0-9.,-]+|infinite)\./g, (_, fs) => token(String.raw`\mathrm{FS} = ${fs === "infinite" ? String.raw`\infty` : formatTexNumber(fs)}`))

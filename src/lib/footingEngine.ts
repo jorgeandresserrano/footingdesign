@@ -14,10 +14,13 @@ export type ConcreteStandard =
   | "CSA A23.3-19"
   | "CSA A23.3-24";
 
+export type SoilTreatmentMode = "ignored" | "service" | "full";
+
 export interface EngineGeometry {
   footingLength: number;
   footingWidth: number;
   footingThickness: number;
+  soilCoverDepth: number;
   pedestalLength: number;
   pedestalWidth: number;
   pedestalHeight: number;
@@ -30,6 +33,7 @@ export interface EngineMaterials {
   concreteElasticModulus: number;
   rebarYield: number;
   concreteUnitWeight: number;
+  soilUnitWeight: number;
   clearCover: number;
   allowableBearing: number;
   subgradeReactionModulus: number;
@@ -100,6 +104,8 @@ export interface StructuralCaseResult {
   name: string;
   maxNetPressure: number;
   minNetPressure: number;
+  maxGrossBearing: number;
+  minGrossBearing: number;
   oneWayShearX: number;
   oneWayShearZ: number;
   flexureX: number;
@@ -120,6 +126,8 @@ export interface FootingDesignResult {
   summary: {
     overallStatus: CheckStatus;
     footingSelfWeight: number;
+    soilOverburdenWeight: number;
+    appliedServiceFoundationWeight: number;
     effectiveDepthX: number;
     effectiveDepthZ: number;
     averageShearDepth: number;
@@ -160,6 +168,26 @@ interface PressureField {
   qz: number;
   max: number;
   min: number;
+}
+
+interface SoilOverburden {
+  weight: number;
+  pressure: number;
+  centroidX: number;
+  centroidZ: number;
+  rects: Rect[];
+}
+
+interface StructuralPressureField extends PressureField {
+  grossAxial: number;
+  grossMx: number;
+  grossMz: number;
+  grossMax: number;
+  grossMin: number;
+  concretePressure: number;
+  soilPressure: number;
+  soilRects: Rect[];
+  foundationDeadLoadFactor: number;
 }
 
 interface CodeParameters {
@@ -276,6 +304,86 @@ function footingWeight(
   );
 }
 
+function clippedPedestalRect(geometry: EngineGeometry) {
+  const { footing, pedestal } = footingRects(geometry);
+  return normalizeRect({
+    xMin: Math.max(footing.xMin, pedestal.xMin),
+    xMax: Math.min(footing.xMax, pedestal.xMax),
+    zMin: Math.max(footing.zMin, pedestal.zMin),
+    zMax: Math.min(footing.zMax, pedestal.zMax),
+  });
+}
+
+function soilOverburdenRects(geometry: EngineGeometry) {
+  const { footing } = footingRects(geometry);
+  const pedestal = clippedPedestalRect(geometry);
+  if (!pedestal) return [footing];
+
+  return [
+    { xMin: footing.xMin, xMax: pedestal.xMin, zMin: footing.zMin, zMax: footing.zMax },
+    { xMin: pedestal.xMax, xMax: footing.xMax, zMin: footing.zMin, zMax: footing.zMax },
+    { xMin: pedestal.xMin, xMax: pedestal.xMax, zMin: footing.zMin, zMax: pedestal.zMin },
+    { xMin: pedestal.xMin, xMax: pedestal.xMax, zMin: pedestal.zMax, zMax: footing.zMax },
+  ]
+    .map(normalizeRect)
+    .filter((rect): rect is Rect => Boolean(rect));
+}
+
+function soilOverburden(
+  geometry: EngineGeometry,
+  materials: EngineMaterials
+): SoilOverburden {
+  const rects = soilOverburdenRects(geometry);
+  const soilCoverDepth = Math.max(finite(geometry.soilCoverDepth), 0);
+  const soilUnitWeight = Math.max(finite(materials.soilUnitWeight), 0);
+  let area = 0;
+  let firstMomentX = 0;
+  let firstMomentZ = 0;
+
+  rects.forEach((rect) => {
+    const integrals = rectIntegrals(rect);
+    if (!integrals) return;
+    area += integrals.area;
+    firstMomentX += integrals.ix1;
+    firstMomentZ += integrals.iz1;
+  });
+
+  const weight = area * soilCoverDepth * soilUnitWeight;
+
+  return {
+    weight,
+    pressure: soilCoverDepth * soilUnitWeight,
+    centroidX: area > EPS ? firstMomentX / area : 0,
+    centroidZ: area > EPS ? firstMomentZ / area : 0,
+    rects,
+  };
+}
+
+function addSoilWeightMoments(
+  moments: Pick<PressureField, "mx" | "mz">,
+  soil: SoilOverburden,
+  factor = 1
+) {
+  const factoredSoilWeight = factor * soil.weight;
+  return {
+    mx: moments.mx + factoredSoilWeight * soil.centroidZ,
+    mz: moments.mz - factoredSoilWeight * soil.centroidX,
+  };
+}
+
+function soilTreatmentLabel(mode: SoilTreatmentMode) {
+  if (mode === "ignored") return "Ignored";
+  if (mode === "full") return "Full including strength";
+  return "Service/stability";
+}
+
+function soilTreatmentFactors(mode: SoilTreatmentMode) {
+  return {
+    service: mode === "ignored" ? 0 : 1,
+    strength: mode === "full" ? 1 : 0,
+  };
+}
+
 function loadMomentsAtFootingCenter(
   loadCase: EngineLoadCase,
   geometry: EngineGeometry
@@ -331,6 +439,103 @@ function pressureAt(
   return field.q0 + field.qx * x + field.qz * z;
 }
 
+function netPressureExtremes(
+  grossField: PressureField,
+  geometry: EngineGeometry,
+  concretePressure: number,
+  soilPressure: number,
+  soilRects: Rect[]
+) {
+  const pedestal = clippedPedestalRect(geometry);
+  const regions = [
+    ...soilRects.map((rect) => ({ rect, hasSoil: true })),
+    ...(pedestal ? [{ rect: pedestal, hasSoil: false }] : []),
+  ];
+  const values = regions.flatMap(({ rect, hasSoil }) =>
+    [
+      [rect.xMin, rect.zMin],
+      [rect.xMin, rect.zMax],
+      [rect.xMax, rect.zMin],
+      [rect.xMax, rect.zMax],
+    ].map(([x, z]) =>
+      pressureAt(grossField, x, z) -
+      concretePressure -
+      (hasSoil ? soilPressure : 0)
+    )
+  );
+
+  if (values.length === 0) {
+    return {
+      max: grossField.max - concretePressure,
+      min: grossField.min - concretePressure,
+    };
+  }
+
+  return {
+    max: Math.max(...values),
+    min: Math.min(...values),
+  };
+}
+
+function strengthPressureField(
+  loadCase: EngineLoadCase,
+  moments: Pick<PressureField, "mx" | "mz">,
+  geometry: EngineGeometry,
+  materials: EngineMaterials,
+  footingSelfWeight: number,
+  soil: SoilOverburden,
+  soilWeightFactor: number
+): StructuralPressureField {
+  const foundationDeadLoadFactor = Math.max(
+    finite(loadCase.foundationDeadLoadFactor, 0),
+    0
+  );
+  const grossMoments = addSoilWeightMoments(
+    moments,
+    soil,
+    foundationDeadLoadFactor * soilWeightFactor
+  );
+  const grossAxial =
+    loadCase.P +
+    foundationDeadLoadFactor * (footingSelfWeight + soilWeightFactor * soil.weight);
+  const grossField = pressureField(
+    grossAxial,
+    grossMoments.mx,
+    grossMoments.mz,
+    geometry
+  );
+  const concretePressure =
+    foundationDeadLoadFactor *
+    Math.max(finite(materials.concreteUnitWeight), 0) *
+    Math.max(finite(geometry.footingThickness), 0);
+  const soilPressure = foundationDeadLoadFactor * soilWeightFactor * soil.pressure;
+  const net = netPressureExtremes(
+    grossField,
+    geometry,
+    concretePressure,
+    soilPressure,
+    soil.rects
+  );
+
+  return {
+    ...grossField,
+    axial: loadCase.P,
+    mx: moments.mx,
+    mz: moments.mz,
+    max: net.max,
+    min: net.min,
+    grossAxial,
+    grossMx: grossMoments.mx,
+    grossMz: grossMoments.mz,
+    grossMax: grossField.max,
+    grossMin: grossField.min,
+    concretePressure,
+    soilPressure,
+    soilRects: soil.rects,
+    foundationDeadLoadFactor,
+  };
+}
+
 function rigidityAdvice(
   geometry: EngineGeometry,
   materials: EngineMaterials
@@ -373,6 +578,7 @@ function rigidityAdvice(
   const ratioZ = projectionZ / Math.max(elasticLength, EPS);
   const governingRatio = Math.max(ratioX, ratioZ);
   const governingProjection = Math.max(projectionX, projectionZ);
+  const minimumRigidElasticLength = governingProjection / 1.75;
   const rigid = governingRatio <= 1.75;
 
   return {
@@ -384,7 +590,8 @@ function rigidityAdvice(
     basis:
       "ACI 336 elastic-foundation screen: treat footing as rigid when L/Le <= 1.75; otherwise use flexible soil-structure analysis.",
     details: [
-      `Le = ${round(elasticLength)} m from (Ec h^3 / 3ks)^0.25 with Ec converted from MPa to kN/m2.`,
+      `Le = ${round(elasticLength)} m from (Ec h^3 / 3ks)^0.25.`,
+      `Minimum Le for rigid behavior = ${round(minimumRigidElasticLength)} m from max(Lx, Lz) / 1.75.`,
       `Lx/Le = ${round(ratioX)}, Lz/Le = ${round(ratioZ)} using footing projections beyond the pedestal.`,
     ],
   };
@@ -418,14 +625,62 @@ function rectIntegrals(rect: Rect) {
   return { area, ix1, iz1, ix2, iz2, ixz };
 }
 
+function isStructuralField(field: PressureField): field is StructuralPressureField {
+  return "concretePressure" in field;
+}
+
+function asStructuralField(field: PressureField): StructuralPressureField | null {
+  return isStructuralField(field) ? field : null;
+}
+
+function overlappedRect(a: Rect, b: Rect) {
+  return normalizeRect({
+    xMin: Math.max(a.xMin, b.xMin),
+    xMax: Math.min(a.xMax, b.xMax),
+    zMin: Math.max(a.zMin, b.zMin),
+    zMax: Math.min(a.zMax, b.zMax),
+  });
+}
+
+function uniformForce(pressure: number, rect: Rect) {
+  const integrals = rectIntegrals(rect);
+  return integrals ? pressure * integrals.area : 0;
+}
+
+function uniformMomentAboutXPlane(pressure: number, rect: Rect, planeX: number) {
+  const integrals = rectIntegrals(rect);
+  return integrals ? pressure * (integrals.ix1 - planeX * integrals.area) : 0;
+}
+
+function uniformMomentAboutZPlane(pressure: number, rect: Rect, planeZ: number) {
+  const integrals = rectIntegrals(rect);
+  return integrals ? pressure * (integrals.iz1 - planeZ * integrals.area) : 0;
+}
+
+function uniformPressureMomentX(pressure: number, rect: Rect) {
+  const integrals = rectIntegrals(rect);
+  return integrals ? pressure * integrals.iz1 : 0;
+}
+
+function uniformPressureMomentZ(pressure: number, rect: Rect) {
+  const integrals = rectIntegrals(rect);
+  return integrals ? pressure * integrals.ix1 : 0;
+}
+
 function integrateForce(field: PressureField, rect: Rect) {
   const integrals = rectIntegrals(rect);
   if (!integrals) return 0;
-  return (
+  const gross =
     field.q0 * integrals.area +
     field.qx * integrals.ix1 +
-    field.qz * integrals.iz1
-  );
+    field.qz * integrals.iz1;
+  const structural = asStructuralField(field);
+  if (!structural) return gross;
+  const soilForce = structural.soilRects.reduce((sum, soilRect) => {
+    const overlap = overlappedRect(rect, soilRect);
+    return sum + (overlap ? uniformForce(structural.soilPressure, overlap) : 0);
+  }, 0);
+  return gross - uniformForce(structural.concretePressure, rect) - soilForce;
 }
 
 function integrateMomentAboutXPlane(
@@ -435,11 +690,17 @@ function integrateMomentAboutXPlane(
 ) {
   const integrals = rectIntegrals(rect);
   if (!integrals) return 0;
-  return (
+  const gross =
     field.q0 * (integrals.ix1 - planeX * integrals.area) +
     field.qx * (integrals.ix2 - planeX * integrals.ix1) +
-    field.qz * (integrals.ixz - planeX * integrals.iz1)
-  );
+    field.qz * (integrals.ixz - planeX * integrals.iz1);
+  const structural = asStructuralField(field);
+  if (!structural) return gross;
+  const soilMoment = structural.soilRects.reduce((sum, soilRect) => {
+    const overlap = overlappedRect(rect, soilRect);
+    return sum + (overlap ? uniformMomentAboutXPlane(structural.soilPressure, overlap, planeX) : 0);
+  }, 0);
+  return gross - uniformMomentAboutXPlane(structural.concretePressure, rect, planeX) - soilMoment;
 }
 
 function integrateMomentAboutZPlane(
@@ -449,31 +710,49 @@ function integrateMomentAboutZPlane(
 ) {
   const integrals = rectIntegrals(rect);
   if (!integrals) return 0;
-  return (
+  const gross =
     field.q0 * (integrals.iz1 - planeZ * integrals.area) +
     field.qx * (integrals.ixz - planeZ * integrals.ix1) +
-    field.qz * (integrals.iz2 - planeZ * integrals.iz1)
-  );
+    field.qz * (integrals.iz2 - planeZ * integrals.iz1);
+  const structural = asStructuralField(field);
+  if (!structural) return gross;
+  const soilMoment = structural.soilRects.reduce((sum, soilRect) => {
+    const overlap = overlappedRect(rect, soilRect);
+    return sum + (overlap ? uniformMomentAboutZPlane(structural.soilPressure, overlap, planeZ) : 0);
+  }, 0);
+  return gross - uniformMomentAboutZPlane(structural.concretePressure, rect, planeZ) - soilMoment;
 }
 
 function integratePressureMomentX(field: PressureField, rect: Rect) {
   const integrals = rectIntegrals(rect);
   if (!integrals) return 0;
-  return (
+  const gross =
     field.q0 * integrals.iz1 +
     field.qx * integrals.ixz +
-    field.qz * integrals.iz2
-  );
+    field.qz * integrals.iz2;
+  const structural = asStructuralField(field);
+  if (!structural) return gross;
+  const soilMoment = structural.soilRects.reduce((sum, soilRect) => {
+    const overlap = overlappedRect(rect, soilRect);
+    return sum + (overlap ? uniformPressureMomentX(structural.soilPressure, overlap) : 0);
+  }, 0);
+  return gross - uniformPressureMomentX(structural.concretePressure, rect) - soilMoment;
 }
 
 function integratePressureMomentZ(field: PressureField, rect: Rect) {
   const integrals = rectIntegrals(rect);
   if (!integrals) return 0;
-  return (
+  const gross =
     field.q0 * integrals.ix1 +
     field.qx * integrals.ix2 +
-    field.qz * integrals.ixz
-  );
+    field.qz * integrals.ixz;
+  const structural = asStructuralField(field);
+  if (!structural) return gross;
+  const soilMoment = structural.soilRects.reduce((sum, soilRect) => {
+    const overlap = overlappedRect(rect, soilRect);
+    return sum + (overlap ? uniformPressureMomentZ(structural.soilPressure, overlap) : 0);
+  }, 0);
+  return gross - uniformPressureMomentZ(structural.concretePressure, rect) - soilMoment;
 }
 
 function barArea(diameterMm: number) {
@@ -1010,6 +1289,7 @@ export function calculateFootingDesign({
   buildingCode,
   loadStandard,
   concreteStandard,
+  soilTreatmentMode,
   geometry,
   materials,
   reinforcement,
@@ -1019,6 +1299,7 @@ export function calculateFootingDesign({
   buildingCode: BuildingCode;
   loadStandard: LoadStandard;
   concreteStandard: ConcreteStandard;
+  soilTreatmentMode: SoilTreatmentMode;
   geometry: EngineGeometry;
   materials: EngineMaterials;
   reinforcement: ReinforcementInputs;
@@ -1027,6 +1308,10 @@ export function calculateFootingDesign({
 }): FootingDesignResult {
   const params = codeParameters(concreteStandard);
   const weight = footingWeight(geometry, materials);
+  const soil = soilOverburden(geometry, materials);
+  const soilFactors = soilTreatmentFactors(soilTreatmentMode);
+  const appliedServiceFoundationWeight =
+    weight + soilFactors.service * soil.weight;
   const dXSingleLayer = effectiveDepth(
     geometry.footingThickness,
     materials.clearCover,
@@ -1061,7 +1346,9 @@ export function calculateFootingDesign({
   const assumptions = [
     "Load rows are already-combined service/stability and strength combinations; this engine does not generate ASCE or NBCC combinations from D/L/W/E components.",
     "P is compression-positive and acts at top of pedestal. Hx/Hz add overturning through pedestal height. Mx/Mz act at top of pedestal.",
-    "Service bearing includes footing self-weight with a 1.0 factor. Strength flexure and shear use net soil pressure from column load and overturning; footing self-weight cancels as distributed dead load.",
+    `Soil treatment mode is ${soilTreatmentLabel(soilTreatmentMode)}. Soil overburden excludes the pedestal footprint.`,
+    "Service bearing and sliding include footing self-weight plus applied service soil overburden.",
+    "Strength flexure and shear include factored soil overburden only in Full mode; net structural demand subtracts matching factored distributed concrete and applied soil loads.",
     "Orthogonal bottom bars are treated conservatively as a two-layer mat; both d_x and d_z use the upper-layer effective depth.",
     "Soil pressure uses linear elastic distribution. Negative pressure means contact loss; affected structural checks are flagged.",
     "ACI 336 rigidity result is advisory only; flexible classification means use soil-structure interaction instead of the linear pressure assumption.",
@@ -1069,8 +1356,9 @@ export function calculateFootingDesign({
   ];
 
   const serviceBearing = serviceLoadCases.map((loadCase) => {
-    const moments = loadMomentsAtFootingCenter(loadCase, geometry);
-    const axial = loadCase.P + weight;
+    const loadMoments = loadMomentsAtFootingCenter(loadCase, geometry);
+    const moments = addSoilWeightMoments(loadMoments, soil, soilFactors.service);
+    const axial = loadCase.P + appliedServiceFoundationWeight;
     const field = pressureField(axial, moments.mx, moments.mz, geometry);
     return {
       id: loadCase.id,
@@ -1086,9 +1374,17 @@ export function calculateFootingDesign({
     };
   });
 
-  const strengthCases = strengthLoadCases.map((loadCase) => {
+  const strengthRows = strengthLoadCases.map((loadCase) => {
     const moments = loadMomentsAtFootingCenter(loadCase, geometry);
-    const field = pressureField(loadCase.P, moments.mx, moments.mz, geometry);
+    const field = strengthPressureField(
+      loadCase,
+      moments,
+      geometry,
+      materials,
+      weight,
+      soil,
+      soilFactors.strength
+    );
     const oneWay = oneWayShearDemands(field, geometry, dX, dZ);
     const flexure = flexureDemands(field, geometry);
     const punching = punchingDemand(
@@ -1100,17 +1396,23 @@ export function calculateFootingDesign({
       materials.concreteStrength
     );
 
+    return { loadCase, field, oneWay, flexure, punching };
+  });
+
+  const strengthCases = strengthRows.map((row) => {
     return {
-      id: loadCase.id,
-      name: loadCaseName(loadCase),
-      maxNetPressure: field.max,
-      minNetPressure: field.min,
-      oneWayShearX: oneWay.x,
-      oneWayShearZ: oneWay.z,
-      flexureX: flexure.x,
-      flexureZ: flexure.z,
-      punchingStress: punching.stress,
-      punchingCapacity: punching.capacity,
+      id: row.loadCase.id,
+      name: loadCaseName(row.loadCase),
+      maxNetPressure: row.field.max,
+      minNetPressure: row.field.min,
+      maxGrossBearing: row.field.grossMax,
+      minGrossBearing: row.field.grossMin,
+      oneWayShearX: row.oneWay.x,
+      oneWayShearZ: row.oneWay.z,
+      flexureX: row.flexure.x,
+      flexureZ: row.flexure.z,
+      punchingStress: row.punching.stress,
+      punchingCapacity: row.punching.capacity,
     };
   });
 
@@ -1125,10 +1427,10 @@ export function calculateFootingDesign({
       unit: "kPa",
       governingCase: bearingGoverning?.name ?? "No service cases",
       basis:
-        "Service load table with linear bearing pressure: q = P/A +/- Mx/Sx +/- Mz/Sz.",
+        "Service load table with linear bearing pressure: q = N/A +/- Mx/Sx +/- Mz/Sz.",
       details: bearingGoverning
         ? [
-            `N = ${round(bearingGoverning.axial)} kN including footing self-weight.`,
+            `N = ${round(bearingGoverning.axial)} kN including footing self-weight and applied service soil overburden.`,
             `Mx = ${round(bearingGoverning.mx)} kN-m, Mz = ${round(bearingGoverning.mz)} kN-m at footing center.`,
           ]
         : [],
@@ -1162,7 +1464,9 @@ export function calculateFootingDesign({
 
   const slidingRows = serviceLoadCases.map((loadCase) => {
     const horizontal = Math.hypot(loadCase.Hx, loadCase.Hz);
-    const resisting = Math.max(loadCase.P + weight, 0) * Math.max(materials.soilFrictionCoefficient, 0);
+    const resisting =
+      Math.max(loadCase.P + appliedServiceFoundationWeight, 0) *
+      Math.max(materials.soilFrictionCoefficient, 0);
     const available = resisting / SERVICE_SLIDING_SAFETY_FACTOR;
     return {
       name: loadCaseName(loadCase),
@@ -1235,24 +1539,14 @@ export function calculateFootingDesign({
     })
   );
 
-  const strengthWarnings = strengthCases.some((row) => row.minNetPressure < -EPS);
+  const strengthWarnings = strengthCases.some((row) => row.minGrossBearing < -EPS);
   const rigidity = rigidityAdvice(geometry, materials);
   const flexureGoverningX = governing(
-    strengthLoadCases.map((loadCase) => {
-      const moments = loadMomentsAtFootingCenter(loadCase, geometry);
-      const field = pressureField(loadCase.P, moments.mx, moments.mz, geometry);
-      const flexure = flexureDemands(field, geometry);
-      return { loadCase, flexure, field };
-    }),
+    strengthRows,
     (row) => row.flexure.x
   );
   const flexureGoverningZ = governing(
-    strengthLoadCases.map((loadCase) => {
-      const moments = loadMomentsAtFootingCenter(loadCase, geometry);
-      const field = pressureField(loadCase.P, moments.mx, moments.mz, geometry);
-      const flexure = flexureDemands(field, geometry);
-      return { loadCase, flexure, field };
-    }),
+    strengthRows,
     (row) => row.flexure.z
   );
   const flexureCapacityX = flexuralCapacity(
@@ -1305,7 +1599,7 @@ export function calculateFootingDesign({
             `Required As = ${round(requiredAsX)} mm2/m; provided As = ${round(asX)} mm2/m.`,
           ]
         : [],
-      notes: strengthWarnings ? ["Strength net pressure has contact loss in at least one load case."] : [],
+      notes: strengthWarnings ? ["Strength gross bearing has contact loss in at least one load case."] : [],
       invalid: strengthLoadCases.length === 0 || strengthWarnings,
     }),
     check({
@@ -1322,7 +1616,7 @@ export function calculateFootingDesign({
             `Required As = ${round(requiredAsZ)} mm2/m; provided As = ${round(asZ)} mm2/m.`,
           ]
         : [],
-      notes: strengthWarnings ? ["Strength net pressure has contact loss in at least one load case."] : [],
+      notes: strengthWarnings ? ["Strength gross bearing has contact loss in at least one load case."] : [],
       invalid: strengthLoadCases.length === 0 || strengthWarnings,
     })
   );
@@ -1359,14 +1653,8 @@ export function calculateFootingDesign({
     );
   }
 
-  const shearRows = strengthLoadCases.map((loadCase) => {
-    const moments = loadMomentsAtFootingCenter(loadCase, geometry);
-    const field = pressureField(loadCase.P, moments.mx, moments.mz, geometry);
-    const oneWay = oneWayShearDemands(field, geometry, dX, dZ);
-    return { loadCase, oneWay, field };
-  });
-  const oneWayGoverningX = governing(shearRows, (row) => row.oneWay.x);
-  const oneWayGoverningZ = governing(shearRows, (row) => row.oneWay.z);
+  const oneWayGoverningX = governing(strengthRows, (row) => row.oneWay.x);
+  const oneWayGoverningZ = governing(strengthRows, (row) => row.oneWay.z);
   const oneWayCapacityX = oneWayShearCapacityPerMeter(
     concreteStandard,
     materials.concreteStrength,
@@ -1391,7 +1679,7 @@ export function calculateFootingDesign({
       details: oneWayGoverningX
         ? [`Critical side = ${oneWayGoverningX.oneWay.xSide}.`]
         : [],
-      notes: strengthWarnings ? ["Strength net pressure has contact loss in at least one load case."] : [],
+      notes: strengthWarnings ? ["Strength gross bearing has contact loss in at least one load case."] : [],
       invalid: strengthLoadCases.length === 0 || strengthWarnings,
     }),
     check({
@@ -1405,26 +1693,13 @@ export function calculateFootingDesign({
       details: oneWayGoverningZ
         ? [`Critical side = ${oneWayGoverningZ.oneWay.zSide}.`]
         : [],
-      notes: strengthWarnings ? ["Strength net pressure has contact loss in at least one load case."] : [],
+      notes: strengthWarnings ? ["Strength gross bearing has contact loss in at least one load case."] : [],
       invalid: strengthLoadCases.length === 0 || strengthWarnings,
     })
   );
 
-  const punchingRows = strengthLoadCases.map((loadCase) => {
-    const moments = loadMomentsAtFootingCenter(loadCase, geometry);
-    const field = pressureField(loadCase.P, moments.mx, moments.mz, geometry);
-    const punching = punchingDemand(
-      loadCase,
-      field,
-      geometry,
-      concreteStandard,
-      dAvg,
-      materials.concreteStrength
-    );
-    return { loadCase, punching, field };
-  });
   const punchingGoverning = governing(
-    punchingRows,
+    strengthRows,
     (row) => row.punching.capacity <= EPS ? Number.POSITIVE_INFINITY : row.punching.stress / row.punching.capacity
   );
   checks.push(
@@ -1443,7 +1718,7 @@ export function calculateFootingDesign({
             `vu direct = ${round(punchingGoverning.punching.directStress)} MPa, vu(Mx) = ${round(punchingGoverning.punching.momentStressX)} MPa, vu(Mz) = ${round(punchingGoverning.punching.momentStressZ)} MPa.`,
           ]
         : [],
-      notes: strengthWarnings ? ["Strength net pressure has contact loss in at least one load case."] : [],
+      notes: strengthWarnings ? ["Strength gross bearing has contact loss in at least one load case."] : [],
       invalid: strengthLoadCases.length === 0 || strengthWarnings,
     })
   );
@@ -1481,6 +1756,8 @@ export function calculateFootingDesign({
     summary: {
       overallStatus: overallStatus(checks),
       footingSelfWeight: weight,
+      soilOverburdenWeight: soil.weight,
+      appliedServiceFoundationWeight,
       effectiveDepthX: dX,
       effectiveDepthZ: dZ,
       averageShearDepth: dAvg,

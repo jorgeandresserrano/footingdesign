@@ -67,6 +67,7 @@ import {
   type CheckUnit,
   type DesignCheck,
   type ReinforcementInputs as EngineReinforcementInputs,
+  type SoilTreatmentMode,
 } from "@/lib/footingEngine";
 import { createFootingCalculationBriefHtml } from "@/lib/footingReport";
 
@@ -111,8 +112,8 @@ const KN_PER_M_TO_KIP_PER_FT = KN_TO_KIP / M_TO_FT;
 const KN_M_PER_M_TO_KIP_FT_PER_FT = KN_M_TO_KIP_FT / M_TO_FT;
 const MM2_PER_M_TO_IN2_PER_FT = 0.0015500031 / M_TO_FT;
 const PCI_TO_KN_M3 = 271.4471412;
-const APP_DATE = "2026-06-15";
-const APP_VERSION = "2";
+const APP_DATE = "2026-06-16";
+const APP_VERSION = "3";
 
 function displayDigitsForUnit(unit?: string) {
   return unit &&
@@ -199,6 +200,10 @@ const MATH_TEXT_PATTERNS: Array<{
   {
     pattern: /q = P\/A \+\/- Mx\/Sx \+\/- Mz\/Sz/,
     tex: () => "q = \\frac{P}{A} \\pm \\frac{M_x}{S_x} \\pm \\frac{M_z}{S_z}",
+  },
+  {
+    pattern: /q = N\/A \+\/- Mx\/Sx \+\/- Mz\/Sz/,
+    tex: () => "q = \\frac{N}{A} \\pm \\frac{M_x}{S_x} \\pm \\frac{M_z}{S_z}",
   },
   {
     pattern: /H <= mu N \/ ([0-9.]+)/,
@@ -343,6 +348,7 @@ interface MaterialInputs {
   concreteElasticModulus: number;
   rebarYield: number;
   concreteUnitWeight: number;
+  soilUnitWeight: number;
   clearCover: number;
   allowableBearing: number;
   subgradeReactionModulus: number;
@@ -381,6 +387,7 @@ const DEFAULT_GEOMETRY_SI: FootingGeometry = {
   footingLength: 2.4,
   footingWidth: 2.4,
   footingThickness: 0.6,
+  soilCoverDepth: 0,
   pedestalLength: 0.6,
   pedestalWidth: 0.6,
   pedestalHeight: 2,
@@ -393,6 +400,7 @@ const DEFAULT_MATERIALS_SI: MaterialInputs = {
   concreteElasticModulus: concreteElasticModulusFromStrength(30, "SI"),
   rebarYield: 420,
   concreteUnitWeight: 24,
+  soilUnitWeight: 18,
   clearCover: 75,
   allowableBearing: 200,
   subgradeReactionModulus: 45000,
@@ -405,6 +413,15 @@ const DEFAULT_REINFORCEMENT_SI: ReinforcementInputs = {
   barDiameterZ: 19.5,
   barSpacingZ: 200,
 };
+
+const SOIL_TREATMENT_OPTIONS: Array<{
+  value: SoilTreatmentMode;
+  label: string;
+}> = [
+  { value: "ignored", label: "Ignored" },
+  { value: "service", label: "Service / stability" },
+  { value: "full", label: "Full" },
+];
 
 const METRIC_REBARS = [
   { label: "10M", diameter: 11.3 },
@@ -599,6 +616,7 @@ function convertGeometry(
     footingLength: roundLength(geometry.footingLength * factor),
     footingWidth: roundLength(geometry.footingWidth * factor),
     footingThickness: roundLength(geometry.footingThickness * factor),
+    soilCoverDepth: roundLength(geometry.soilCoverDepth * factor),
     pedestalLength: roundLength(geometry.pedestalLength * factor),
     pedestalWidth: roundLength(geometry.pedestalWidth * factor),
     pedestalHeight: roundLength(geometry.pedestalHeight * factor),
@@ -627,6 +645,9 @@ function convertMaterials(
     ),
     concreteUnitWeight: roundMaterial(
       materials.concreteUnitWeight * (toUsc ? KN_M3_TO_PCF : 1 / KN_M3_TO_PCF)
+    ),
+    soilUnitWeight: roundMaterial(
+      materials.soilUnitWeight * (toUsc ? KN_M3_TO_PCF : 1 / KN_M3_TO_PCF)
     ),
     clearCover: roundMaterial(
       materials.clearCover * (toUsc ? MM_TO_IN : 1 / MM_TO_IN)
@@ -1183,6 +1204,8 @@ export default function Home() {
   const [loadTableOpen, setLoadTableOpen] = useState(false);
   const [loadCombinationType, setLoadCombinationType] =
     useState<LoadCombinationType>("service");
+  const [soilTreatmentMode, setSoilTreatmentMode] =
+    useState<SoilTreatmentMode>("service");
   const [isSelectingCells, setIsSelectingCells] = useState(false);
   const isSelectingCellsRef = useRef(false);
   const [selectedCells, setSelectedCells] = useState<SelectionRange | null>(
@@ -1258,6 +1281,9 @@ export default function Home() {
     0,
     ...activeLoadCases.map((loadCase) => loadCase.P)
   );
+  const soilTreatmentLabel =
+    SOIL_TREATMENT_OPTIONS.find((option) => option.value === soilTreatmentMode)
+      ?.label ?? "Service / stability";
   const designResults = useMemo(() => {
     const siGeometry =
       units === "SI" ? geometry : convertGeometry(geometry, "USC", "SI");
@@ -1284,6 +1310,7 @@ export default function Home() {
       buildingCode,
       loadStandard,
       concreteStandard,
+      soilTreatmentMode,
       geometry: siGeometry,
       materials: siMaterials,
       reinforcement: siReinforcement,
@@ -1299,6 +1326,7 @@ export default function Home() {
     loadStandard,
     materials,
     reinforcement,
+    soilTreatmentMode,
     units,
   ]);
   const governingServiceBearing = designResults.serviceBearing.reduce<
@@ -1767,6 +1795,7 @@ export default function Home() {
     setMaterials(defaultMaterials(units));
     setConcreteModulusOverridden(false);
     setReinforcement(defaultReinforcement(units));
+    setSoilTreatmentMode("service");
     setServiceLoadCases(defaultLoadCases(units));
     setStrengthLoadCases(defaultStrengthLoadCases(units));
   };
@@ -1810,6 +1839,7 @@ export default function Home() {
       buildingCode,
       loadStandard,
       concreteStandard,
+      soilTreatmentMode,
       geometry: siGeometry,
       materials: siMaterials,
       reinforcement: siReinforcement,
@@ -2313,6 +2343,15 @@ export default function Home() {
                   tooltip="Concrete slab thickness."
                 />
                 <NumField
+                  id="soilCoverDepth"
+                  label="Soil cover depth"
+                  unit={<MathUnit unit={lengthUnit} />}
+                  value={geometry.soilCoverDepth}
+                  min={0}
+                  onChange={(value) => updateGeometry("soilCoverDepth", value)}
+                  tooltip="Vertical soil depth from footing top to finished grade. Soil over the pedestal footprint is excluded."
+                />
+                <NumField
                   id="pedestalLength"
                   label="Pedestal footprint length"
                   unit={<MathUnit unit={lengthUnit} />}
@@ -2449,6 +2488,15 @@ export default function Home() {
                   tooltip="Normalweight concrete density used for footing self-weight."
                 />
                 <NumField
+                  id="soilUnitWeight"
+                  label="Soil unit weight"
+                  unit={<MathUnit unit={unitWeightUnit} />}
+                  value={materials.soilUnitWeight}
+                  min={0}
+                  onChange={(value) => updateMaterials("soilUnitWeight", value)}
+                  tooltip="Soil unit weight used for overburden above the footing outside the pedestal footprint."
+                />
+                <NumField
                   id="clearCover"
                   label="Clear cover"
                   unit={<MathUnit unit={coverUnit} />}
@@ -2580,9 +2628,9 @@ export default function Home() {
                     />
                     <TooltipContent className="max-w-sm text-xs">
                       Foundation weight is computed from footing concrete volume
-                      and concrete unit weight. Service/stability combinations
-                      use a 1.0 dead-load factor. Strength combinations use the
-                      per-row Foundation D factor.
+                      plus soil overburden outside the pedestal footprint.
+                      Soil treatment controls where overburden is applied.
+                      Strength combinations use the per-row Foundation D factor.
                     </TooltipContent>
                   </Tooltip>
                 </div>
@@ -2610,6 +2658,35 @@ export default function Home() {
                     Edit load table
                   </Button>
                 </div>
+                <div className="grid gap-1.5 sm:max-w-xs">
+                  <Label htmlFor="soilTreatmentMode">Soil treatment</Label>
+                  <Select
+                    value={soilTreatmentMode}
+                    onValueChange={(value) =>
+                      setSoilTreatmentMode(value as SoilTreatmentMode)
+                    }
+                  >
+                    <SelectTrigger
+                      id="soilTreatmentMode"
+                      aria-label="Soil treatment"
+                    >
+                      <SelectValue>
+                        {(value) =>
+                          SOIL_TREATMENT_OPTIONS.find(
+                            (option) => option.value === value
+                          )?.label
+                        }
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SOIL_TREATMENT_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <Separator />
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                   <span className="text-muted-foreground">
@@ -2618,6 +2695,28 @@ export default function Home() {
 	                  <span className="text-right font-medium">
 	                    <CheckValue
 	                      value={designResults.summary.footingSelfWeight}
+	                      unit="kN"
+	                      units={units}
+	                    />
+	                  </span>
+                  <span className="text-muted-foreground">
+                    Soil overburden
+                  </span>
+	                  <span className="text-right font-medium">
+	                    <CheckValue
+	                      value={designResults.summary.soilOverburdenWeight}
+	                      unit="kN"
+	                      units={units}
+	                    />
+                  </span>
+                  <span className="text-muted-foreground">
+                    Applied service foundation weight
+                  </span>
+	                  <span className="text-right font-medium">
+	                    <CheckValue
+	                      value={
+                          designResults.summary.appliedServiceFoundationWeight
+                        }
 	                      unit="kN"
 	                      units={units}
 	                    />
@@ -3137,6 +3236,17 @@ export default function Home() {
                         reference: null,
                       },
                       {
+                        k: "H-hs",
+                        name: (
+                          <>
+                            <FormulaValue tex="h_s" /> - soil cover depth
+                          </>
+                        ),
+                        value: formatForUnit(geometry.soilCoverDepth, lengthUnit),
+                        unit: lengthUnit,
+                        reference: null,
+                      },
+                      {
                         k: "K-ks",
                         name: (
                           <>
@@ -3170,6 +3280,24 @@ export default function Home() {
                         ),
                         value: fmt(materials.soilFrictionCoefficient, 2),
                         unit: "",
+                        reference: null,
+                      },
+                      {
+                        k: "S-soil-treatment",
+                        name: <>Soil treatment</>,
+                        value: soilTreatmentLabel,
+                        unit: "",
+                        reference: null,
+                      },
+                      {
+                        k: "zz-gamma-s",
+                        name: (
+                          <>
+                            <FormulaValue tex={"\\gamma_s"} /> - soil unit weight
+                          </>
+                        ),
+                        value: formatForUnit(materials.soilUnitWeight, unitWeightUnit),
+                        unit: unitWeightUnit,
                         reference: null,
                       },
                       {
@@ -3396,6 +3524,38 @@ export default function Home() {
                         ),
                         value: formatForUnit(
                           convertedValue(designResults.summary.footingSelfWeight, "kN", units),
+                          forceUnit
+                        ),
+                        unit: forceUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "W-soil",
+                        name: (
+                          <>
+                            <FormulaValue tex="W_s" /> - soil overburden
+                          </>
+                        ),
+                        value: formatForUnit(
+                          convertedValue(designResults.summary.soilOverburdenWeight, "kN", units),
+                          forceUnit
+                        ),
+                        unit: forceUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "W-total",
+                        name: (
+                          <>
+                            <FormulaValue tex="W_{svc}" /> - applied service foundation weight
+                          </>
+                        ),
+                        value: formatForUnit(
+                          convertedValue(
+                            designResults.summary.appliedServiceFoundationWeight,
+                            "kN",
+                            units
+                          ),
                           forceUnit
                         ),
                         unit: forceUnit,
