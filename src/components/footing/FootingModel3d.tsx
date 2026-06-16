@@ -15,7 +15,6 @@ import {
 } from "three";
 
 const CAMERA_FOV = 35;
-const CAMERA_TARGET: [number, number, number] = [0, 0.15, 0];
 const CAMERA_DIRECTION = [1, 0.75, 1] as const;
 const CAMERA_DIRECTION_LENGTH = Math.hypot(...CAMERA_DIRECTION);
 const AXIS_SHAFT_RADIUS_FACTOR = 0.002;
@@ -168,14 +167,17 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
   const modelWidth = maxZ - minZ;
   const modelSpan = Math.max(modelLength, modelWidth, pedestalHeight);
   const modelHeight = footingThickness + pedestalHeight;
+  const axisLength = Math.max(modelSpan * 0.28, 0.7);
+  const visualLength = Math.max(modelLength, axisLength * 2.8);
+  const visualWidth = Math.max(modelWidth, axisLength * 2.8);
+  const visualHeight = modelHeight + axisLength * 1.4;
   const lockedZoomDistance = getCameraDistance({
-    modelLength,
-    modelWidth,
-    modelHeight,
+    modelLength: visualLength,
+    modelWidth: visualWidth,
+    modelHeight: visualHeight,
     aspect: size.width / size.height,
   });
   const cameraDistance = lockedZoomDistance / CAMERA_DIRECTION_LENGTH;
-  const axisLength = Math.max(modelSpan * 0.28, 0.7);
   const axisShaftRadius = lockedZoomDistance * AXIS_SHAFT_RADIUS_FACTOR;
   const axisHeadRadius = lockedZoomDistance * AXIS_HEAD_RADIUS_FACTOR;
   const axisHeadLength = lockedZoomDistance * AXIS_HEAD_LENGTH_FACTOR;
@@ -185,15 +187,20 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
   const momentHeadRadius = axisHeadRadius * 0.75;
   const momentHeadLength = axisHeadLength * 0.75;
   const axisOriginY = footingThickness + pedestalHeight + 0.08;
+  const cameraTarget: [number, number, number] = [
+    (minX + maxX) / 2,
+    visualHeight / 2 - footingThickness / 2,
+    (minZ + maxZ) / 2,
+  ];
 
   return (
     <>
       <PerspectiveCamera
         makeDefault
         position={[
-          CAMERA_TARGET[0] + cameraDistance * CAMERA_DIRECTION[0],
-          CAMERA_TARGET[1] + cameraDistance * CAMERA_DIRECTION[1],
-          CAMERA_TARGET[2] + cameraDistance * CAMERA_DIRECTION[2],
+          cameraTarget[0] + cameraDistance * CAMERA_DIRECTION[0],
+          cameraTarget[1] + cameraDistance * CAMERA_DIRECTION[1],
+          cameraTarget[2] + cameraDistance * CAMERA_DIRECTION[2],
         ]}
         fov={CAMERA_FOV}
         near={0.1}
@@ -273,7 +280,7 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
           tubeRadius={momentTubeRadius}
           headRadius={momentHeadRadius}
           headLength={momentHeadLength}
-          position={[0, axisLength - momentOffset, 0]}
+          position={[0, axisLength + momentOffset, 0]}
           rotation={[Math.PI / 2, 0, 0]}
         />
       </group>
@@ -302,7 +309,7 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
         enableZoom={false}
         minDistance={lockedZoomDistance}
         maxDistance={lockedZoomDistance}
-        target={CAMERA_TARGET}
+        target={cameraTarget}
       />
     </>
   );

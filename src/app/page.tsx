@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import {
   AlertTriangle,
   Building2,
+  Calculator,
   CheckCircle2,
   Copy,
   Info,
@@ -67,6 +68,7 @@ import {
   type DesignCheck,
   type ReinforcementInputs as EngineReinforcementInputs,
 } from "@/lib/footingEngine";
+import { createFootingCalculationBriefHtml } from "@/lib/footingReport";
 
 const FootingModel3d = dynamic(
   () =>
@@ -381,7 +383,7 @@ const DEFAULT_GEOMETRY_SI: FootingGeometry = {
   footingThickness: 0.6,
   pedestalLength: 0.6,
   pedestalWidth: 0.6,
-  pedestalHeight: 0.8,
+  pedestalHeight: 2,
   pedestalOffsetX: 0,
   pedestalOffsetZ: 0,
 };
@@ -1776,6 +1778,58 @@ export default function Home() {
     setConcreteStandard(references.concreteStandard);
   };
 
+  const openCalculationBrief = () => {
+    const title = modelName.trim() || "Untitled footing";
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) return;
+
+    const siGeometry =
+      units === "SI" ? geometry : convertGeometry(geometry, "USC", "SI");
+    const siMaterials =
+      units === "SI" ? materials : convertMaterials(materials, "USC", "SI");
+    const siReinforcement =
+      units === "SI"
+        ? reinforcement
+        : convertReinforcement(reinforcement, "USC", "SI");
+    const siServiceLoads =
+      units === "SI"
+        ? activeLoadCases
+        : convertLoadCases(activeLoadCases, "USC", "SI").filter(
+            (loadCase) => !isEmptyLoadCase(loadCase)
+          );
+    const siStrengthLoads =
+      units === "SI"
+        ? activeStrengthLoadCases
+        : convertLoadCases(activeStrengthLoadCases, "USC", "SI").filter(
+            (loadCase) => !isEmptyLoadCase(loadCase)
+          );
+
+    const html = createFootingCalculationBriefHtml({
+      title,
+      units,
+      buildingCode,
+      loadStandard,
+      concreteStandard,
+      geometry: siGeometry,
+      materials: siMaterials,
+      reinforcement: siReinforcement,
+      serviceLoadCases: siServiceLoads,
+      strengthLoadCases: siStrengthLoads,
+      results: designResults,
+    });
+
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.document.title = title;
+    try {
+      printWindow.history.replaceState(null, title, window.location.href);
+    } catch {
+      // Ignore browsers that do not allow replacing a generated report URL.
+    }
+    printWindow.focus();
+  };
+
   return (
     <TooltipProvider delay={150}>
       <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
@@ -1807,6 +1861,14 @@ export default function Home() {
                 />
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={openCalculationBrief}
+                >
+                  <Calculator />
+                  See calculation
+                </Button>
                 <Button
                   type="button"
                   variant="outline"
@@ -3201,7 +3263,7 @@ export default function Home() {
                           </>
                         ),
                         value: formatForUnit(
-                          convertedValue(designResults.summary.minimumAsX, "mm²/m", units),
+                          convertedValue(designResults.summary.minimumAsX, "mm2/m", units),
                           units === "SI" ? "mm²/m" : "in²/ft"
                         ),
                         unit: units === "SI" ? "mm²/m" : "in²/ft",
@@ -3215,7 +3277,7 @@ export default function Home() {
                           </>
                         ),
                         value: formatForUnit(
-                          convertedValue(designResults.summary.minimumAsZ, "mm²/m", units),
+                          convertedValue(designResults.summary.minimumAsZ, "mm2/m", units),
                           units === "SI" ? "mm²/m" : "in²/ft"
                         ),
                         unit: units === "SI" ? "mm²/m" : "in²/ft",
@@ -3229,7 +3291,7 @@ export default function Home() {
                           </>
                         ),
                         value: formatForUnit(
-                          convertedValue(designResults.summary.providedAsX, "mm²/m", units),
+                          convertedValue(designResults.summary.providedAsX, "mm2/m", units),
                           units === "SI" ? "mm²/m" : "in²/ft"
                         ),
                         unit: units === "SI" ? "mm²/m" : "in²/ft",
@@ -3243,7 +3305,7 @@ export default function Home() {
                           </>
                         ),
                         value: formatForUnit(
-                          convertedValue(designResults.summary.providedAsZ, "mm²/m", units),
+                          convertedValue(designResults.summary.providedAsZ, "mm2/m", units),
                           units === "SI" ? "mm²/m" : "in²/ft"
                         ),
                         unit: units === "SI" ? "mm²/m" : "in²/ft",
