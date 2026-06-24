@@ -26,6 +26,8 @@ export interface FootingGeometry {
   footingWidth: number;
   footingThickness: number;
   soilCoverDepth: number;
+  frostDepth: number;
+  groundwaterDepth: number;
   pedestalLength: number;
   pedestalWidth: number;
   pedestalHeight: number;

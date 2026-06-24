@@ -21,6 +21,8 @@ export interface EngineGeometry {
   footingWidth: number;
   footingThickness: number;
   soilCoverDepth: number;
+  frostDepth: number;
+  groundwaterDepth: number;
   pedestalLength: number;
   pedestalWidth: number;
   pedestalHeight: number;
@@ -34,10 +36,18 @@ export interface EngineMaterials {
   rebarYield: number;
   concreteUnitWeight: number;
   soilUnitWeight: number;
+  saturatedSoilUnitWeight: number;
+  waterUnitWeight: number;
   clearCover: number;
   allowableBearing: number;
+  ultimateBearing: number;
   subgradeReactionModulus: number;
   soilFrictionCoefficient: number;
+  slidingSafetyFactor: number;
+  overturningSafetyFactor: number;
+  allowableSettlement: number;
+  allowableRotationX: number;
+  allowableRotationZ: number;
 }
 
 export interface ReinforcementInputs {
@@ -64,11 +74,13 @@ export type CheckStatus = "pass" | "fail" | "warning" | "not-applicable";
 export type CheckUnit =
   | "kPa"
   | "kN"
+  | "kN-m"
   | "kN/m"
   | "kN-m/m"
   | "MPa"
   | "mm"
   | "mm2/m"
+  | "rad"
   | "ratio"
   | "none";
 
@@ -94,6 +106,11 @@ export interface BearingCaseResult {
   axial: number;
   mx: number;
   mz: number;
+  qx: number;
+  qz: number;
+  settlement: number;
+  rotationX: number;
+  rotationZ: number;
   eccentricityX: number | null;
   eccentricityZ: number | null;
   resultantWithinKern: boolean;
@@ -204,7 +221,8 @@ interface CodeParameters {
 }
 
 const EPS = 1e-9;
-const SERVICE_SLIDING_SAFETY_FACTOR = 1.5;
+const DEFAULT_SERVICE_SLIDING_SAFETY_FACTOR = 1.5;
+const DEFAULT_SERVICE_OVERTURNING_SAFETY_FACTOR = 1.5;
 const CONCRETE_SHEAR_STRENGTH_LIMIT_ACI = 8.3;
 const CONCRETE_SHEAR_STRENGTH_LIMIT_CSA = 8;
 
@@ -263,7 +281,7 @@ function codeReferences(
       `${buildingCode} Chapter 19 / Section 1901 for ACI 318 concrete design.`,
       `${loadStandard} combinations are expected in the service and strength load tables.`,
       `${concreteStandard} controls footing flexure, shear, and minimum reinforcement checks.`,
-      "ACI 336 guides the rigid-versus-flexible foundation advisory.",
+      "ACI 336.2R guides the adapted isolated-footing rigidity advisory.",
     ];
   }
 
@@ -271,7 +289,7 @@ function codeReferences(
     `${buildingCode} Part 4 for structural loads and limit states.`,
     `${concreteStandard} controls footing flexure, shear, and minimum reinforcement checks.`,
     "NBCC load combinations are expected in the service and strength load tables.",
-    "ACI 336 guides the rigid-versus-flexible foundation advisory.",
+    "ACI 336.2R guides the adapted isolated-footing rigidity advisory.",
   ];
 }
 
@@ -296,12 +314,43 @@ function footingWeight(
   geometry: EngineGeometry,
   materials: EngineMaterials
 ) {
-  return (
-    positive(geometry.footingLength) *
-    positive(geometry.footingWidth) *
-    positive(geometry.footingThickness) *
-    Math.max(materials.concreteUnitWeight, 0)
+  const area = positive(geometry.footingLength) * positive(geometry.footingWidth);
+  const yTop = Math.max(finite(geometry.soilCoverDepth), 0);
+  const yBottom = yTop + positive(geometry.footingThickness);
+  const adjusted = waterAdjustedWeight(
+    Math.max(materials.concreteUnitWeight, 0),
+    Math.max(materials.concreteUnitWeight, 0),
+    Math.max(materials.waterUnitWeight, 0),
+    area,
+    yTop,
+    yBottom,
+    Math.max(finite(geometry.groundwaterDepth, Number.POSITIVE_INFINITY), 0)
   );
+  return (
+    adjusted.weight
+  );
+}
+
+function waterAdjustedWeight(
+  dryUnitWeight: number,
+  saturatedUnitWeight: number,
+  waterUnitWeight: number,
+  area: number,
+  yTop: number,
+  yBottom: number,
+  groundwaterDepth: number
+) {
+  const height = Math.max(yBottom - yTop, 0);
+  const dryHeight = Math.max(0, Math.min(yBottom, groundwaterDepth) - yTop);
+  const wetHeight = Math.max(0, height - dryHeight);
+  const buoyantUnitWeight = Math.max(saturatedUnitWeight - waterUnitWeight, 0);
+
+  return {
+    dryHeight,
+    wetHeight,
+    weight: area * (dryHeight * dryUnitWeight + wetHeight * buoyantUnitWeight),
+    pressure: dryHeight * dryUnitWeight + wetHeight * buoyantUnitWeight,
+  };
 }
 
 function clippedPedestalRect(geometry: EngineGeometry) {
@@ -336,6 +385,12 @@ function soilOverburden(
   const rects = soilOverburdenRects(geometry);
   const soilCoverDepth = Math.max(finite(geometry.soilCoverDepth), 0);
   const soilUnitWeight = Math.max(finite(materials.soilUnitWeight), 0);
+  const saturatedSoilUnitWeight = Math.max(finite(materials.saturatedSoilUnitWeight), 0);
+  const waterUnitWeight = Math.max(finite(materials.waterUnitWeight), 0);
+  const groundwaterDepth = Math.max(
+    finite(geometry.groundwaterDepth, Number.POSITIVE_INFINITY),
+    0
+  );
   let area = 0;
   let firstMomentX = 0;
   let firstMomentZ = 0;
@@ -348,11 +403,19 @@ function soilOverburden(
     firstMomentZ += integrals.iz1;
   });
 
-  const weight = area * soilCoverDepth * soilUnitWeight;
+  const adjusted = waterAdjustedWeight(
+    soilUnitWeight,
+    saturatedSoilUnitWeight,
+    waterUnitWeight,
+    area,
+    0,
+    soilCoverDepth,
+    groundwaterDepth
+  );
 
   return {
-    weight,
-    pressure: soilCoverDepth * soilUnitWeight,
+    weight: adjusted.weight,
+    pressure: adjusted.pressure,
     centroidX: area > EPS ? firstMomentX / area : 0,
     centroidZ: area > EPS ? firstMomentZ / area : 0,
     rects,
@@ -504,10 +567,22 @@ function strengthPressureField(
     grossMoments.mz,
     geometry
   );
+  const footingTopDepth = Math.max(finite(geometry.soilCoverDepth), 0);
+  const groundwaterDepth = Math.max(
+    finite(geometry.groundwaterDepth, Number.POSITIVE_INFINITY),
+    0
+  );
   const concretePressure =
     foundationDeadLoadFactor *
-    Math.max(finite(materials.concreteUnitWeight), 0) *
-    Math.max(finite(geometry.footingThickness), 0);
+    waterAdjustedWeight(
+      Math.max(finite(materials.concreteUnitWeight), 0),
+      Math.max(finite(materials.concreteUnitWeight), 0),
+      Math.max(finite(materials.waterUnitWeight), 0),
+      1,
+      footingTopDepth,
+      footingTopDepth + Math.max(finite(geometry.footingThickness), 0),
+      groundwaterDepth
+    ).pressure;
   const soilPressure = foundationDeadLoadFactor * soilWeightFactor * soil.pressure;
   const net = netPressureExtremes(
     grossField,
@@ -568,17 +643,20 @@ function rigidityAdvice(
       elasticLength: null,
       governingProjection: null,
       basis:
-        "ACI 336 rigidity advisory needs concrete modulus Ec and vertical subgrade reaction modulus ks.",
+        "Adapted ACI 336.2R rigidity advisory needs concrete modulus Ec and vertical subgrade reaction modulus ks.",
       details: ["Enter Ec and ks to classify rigid versus flexible behavior."],
     };
   }
 
   const elasticLength = ((ec * 1000) * thickness ** 3 / (3 * ks)) ** 0.25;
-  const ratioX = projectionX / Math.max(elasticLength, EPS);
-  const ratioZ = projectionZ / Math.max(elasticLength, EPS);
+  const effectiveLengthX = 4 * projectionX;
+  const effectiveLengthZ = 4 * projectionZ;
+  const ratioX = effectiveLengthX / Math.max(elasticLength, EPS);
+  const ratioZ = effectiveLengthZ / Math.max(elasticLength, EPS);
   const governingRatio = Math.max(ratioX, ratioZ);
   const governingProjection = Math.max(projectionX, projectionZ);
-  const minimumRigidElasticLength = governingProjection / 1.75;
+  const minimumRigidElasticLength = (4 * governingProjection) / 1.75;
+  const maximumRigidProjection = (1.75 * elasticLength) / 4;
   const rigid = governingRatio <= 1.75;
 
   return {
@@ -588,11 +666,13 @@ function rigidityAdvice(
     elasticLength,
     governingProjection,
     basis:
-      "ACI 336 elastic-foundation screen: treat footing as rigid when L/Le <= 1.75; otherwise use flexible soil-structure analysis.",
+      "Adapted ACI 336.2R isolated-footing screen: Section 5.3 compares adjacent strip-footing spans with elastic length; here Leff = 4a.",
     details: [
+      "Why 4a: the pedestal-to-edge projection a is treated as one edge curvature length, so 4a approximates the span-like length used by the strip-footing criterion.",
       `Le = ${round(elasticLength)} m from (Ec h^3 / 3ks)^0.25.`,
-      `Minimum Le for rigid behavior = ${round(minimumRigidElasticLength)} m from max(Lx, Lz) / 1.75.`,
-      `Lx/Le = ${round(ratioX)}, Lz/Le = ${round(ratioZ)} using footing projections beyond the pedestal.`,
+      `Rigid advisory when Leff/Le <= 1.75; otherwise consider flexible soil-structure analysis.`,
+      `a_x = ${round(projectionX)} m, a_z = ${round(projectionZ)} m; a_max = ${round(maximumRigidProjection)} m before flexible behavior is advised.`,
+      `Governing Leff/Le = ${round(governingRatio)} vs 1.75; minimum Le for current projection = ${round(minimumRigidElasticLength)} m.`,
     ],
   };
 }
@@ -1312,6 +1392,14 @@ export function calculateFootingDesign({
   const soilFactors = soilTreatmentFactors(soilTreatmentMode);
   const appliedServiceFoundationWeight =
     weight + soilFactors.service * soil.weight;
+  const slidingSafetyFactor = positive(
+    materials.slidingSafetyFactor,
+    DEFAULT_SERVICE_SLIDING_SAFETY_FACTOR
+  );
+  const overturningSafetyFactor = positive(
+    materials.overturningSafetyFactor,
+    DEFAULT_SERVICE_OVERTURNING_SAFETY_FACTOR
+  );
   const dXSingleLayer = effectiveDepth(
     geometry.footingThickness,
     materials.clearCover,
@@ -1347,11 +1435,12 @@ export function calculateFootingDesign({
     "Load rows are already-combined service/stability and strength combinations; this engine does not generate ASCE or NBCC combinations from D/L/W/E components.",
     "P is compression-positive and acts at top of pedestal. Hx/Hz add overturning through pedestal height. Mx/Mz act at top of pedestal.",
     `Soil treatment mode is ${soilTreatmentLabel(soilTreatmentMode)}. Soil overburden excludes the pedestal footprint.`,
-    "Service bearing and sliding include footing self-weight plus applied service soil overburden.",
+    "Groundwater reduces effective concrete and soil weights below the entered groundwater depth using buoyant unit weights.",
+    "Service bearing, sliding, overturning, settlement, and rotation include footing self-weight plus applied service soil overburden.",
     "Strength flexure and shear include factored soil overburden only in Full mode; net structural demand subtracts matching factored distributed concrete and applied soil loads.",
     "Orthogonal bottom bars are treated conservatively as a two-layer mat; both d_x and d_z use the upper-layer effective depth.",
     "Soil pressure uses linear elastic distribution. Negative pressure means contact loss; affected structural checks are flagged.",
-    "ACI 336 rigidity result is advisory only; flexible classification means use soil-structure interaction instead of the linear pressure assumption.",
+    "ACI 336.2R rigidity result is adapted for isolated footings using Leff = 4a; flexible classification means use soil-structure interaction instead of the linear pressure assumption.",
     "Pedestal is treated as a rectangular loaded area. Pedestal and pedestal-to-footing transfer design are outside this footing-slab check.",
   ];
 
@@ -1368,6 +1457,14 @@ export function calculateFootingDesign({
       axial,
       mx: moments.mx,
       mz: moments.mz,
+      qx: field.qx,
+      qz: field.qz,
+      settlement:
+        Math.max(field.max, 0) /
+        Math.max(materials.subgradeReactionModulus, EPS) *
+        1000,
+      rotationX: Math.abs(field.qz) / Math.max(materials.subgradeReactionModulus, EPS),
+      rotationZ: Math.abs(field.qx) / Math.max(materials.subgradeReactionModulus, EPS),
       eccentricityX: Math.abs(axial) > EPS ? moments.mz / axial : null,
       eccentricityZ: Math.abs(axial) > EPS ? moments.mx / axial : null,
       resultantWithinKern: field.min >= -EPS,
@@ -1417,6 +1514,25 @@ export function calculateFootingDesign({
   });
 
   const checks: DesignCheck[] = [];
+  checks.push(
+    check({
+      id: "frost-depth",
+      label: "Frost depth",
+      demand: Math.max(finite(geometry.frostDepth), 0) * 1000,
+      capacity:
+        (Math.max(finite(geometry.soilCoverDepth), 0) +
+          Math.max(finite(geometry.footingThickness), 0)) *
+        1000,
+      unit: "mm",
+      governingCase: "Geometry",
+      basis: "Footing bottom depth must be at or below the entered frost depth.",
+      details: [
+        `Footing top depth = ${round(Math.max(finite(geometry.soilCoverDepth), 0))} m.`,
+        `Footing bottom depth = ${round(Math.max(finite(geometry.soilCoverDepth), 0) + Math.max(finite(geometry.footingThickness), 0))} m.`,
+      ],
+    })
+  );
+
   const bearingGoverning = governing(serviceBearing, (result) => result.maxBearing);
   checks.push(
     check({
@@ -1443,23 +1559,22 @@ export function calculateFootingDesign({
   checks.push(
     check({
       id: "soil-contact",
-      label: "No service uplift",
-      demand: upliftGoverning ? Math.max(-upliftGoverning.minBearing, 0) : null,
+      label: "Uplift check",
+      demand: upliftGoverning?.minBearing ?? null,
       capacity: 0,
       unit: "kPa",
       governingCase: upliftGoverning?.name ?? "No service cases",
-      basis: "Minimum service corner bearing must remain compression-positive.",
-      details: upliftGoverning
-        ? [`qmin = ${round(upliftGoverning.minBearing)} kPa.`]
-        : [],
+      basis: "qmin >= 0 kPa.",
+      details: [],
       notes: [],
       invalid: serviceBearing.length === 0,
     })
   );
   const upliftCheck = checks[checks.length - 1];
   if (upliftCheck.demand !== null) {
-    upliftCheck.utilization = upliftCheck.demand <= EPS ? 0 : Number.POSITIVE_INFINITY;
-    upliftCheck.status = upliftCheck.demand <= EPS ? "pass" : "fail";
+    upliftCheck.utilization =
+      upliftCheck.demand >= -EPS ? 0 : Number.POSITIVE_INFINITY;
+    upliftCheck.status = upliftCheck.demand >= -EPS ? "pass" : "fail";
   }
 
   const slidingRows = serviceLoadCases.map((loadCase) => {
@@ -1467,7 +1582,7 @@ export function calculateFootingDesign({
     const resisting =
       Math.max(loadCase.P + appliedServiceFoundationWeight, 0) *
       Math.max(materials.soilFrictionCoefficient, 0);
-    const available = resisting / SERVICE_SLIDING_SAFETY_FACTOR;
+    const available = resisting / slidingSafetyFactor;
     return {
       name: loadCaseName(loadCase),
       horizontal,
@@ -1487,12 +1602,148 @@ export function calculateFootingDesign({
       unit: "kN",
       governingCase: slidingGoverning?.name ?? "No service cases",
       basis:
-        `Friction-only check: H <= mu N / ${SERVICE_SLIDING_SAFETY_FACTOR}. Passive resistance is not included.`,
+        `Friction-only check: H <= mu N / ${slidingSafetyFactor}. Passive resistance is not included.`,
       details: slidingGoverning
         ? [`FS = ${Number.isFinite(slidingGoverning.safetyFactor) ? round(slidingGoverning.safetyFactor, 2) : "infinite"}.`]
         : [],
       notes: [],
       invalid: serviceLoadCases.length === 0,
+    })
+  );
+
+  const factoredBearingGoverning = governing(
+    strengthCases,
+    (result) => result.maxGrossBearing
+  );
+  checks.push(
+    check({
+      id: "factored-bearing",
+      label: "Factored soil bearing",
+      demand: factoredBearingGoverning?.maxGrossBearing ?? null,
+      capacity: materials.ultimateBearing,
+      unit: "kPa",
+      governingCase: factoredBearingGoverning?.name ?? "No strength cases",
+      basis:
+        "Strength load table with gross linear bearing pressure checked against ultimate soil bearing.",
+      details: factoredBearingGoverning
+        ? [
+            `qmin = ${round(factoredBearingGoverning.minGrossBearing)} kPa.`,
+          ]
+        : [],
+      notes: factoredBearingGoverning && factoredBearingGoverning.minGrossBearing < -EPS
+        ? ["Strength gross bearing has contact loss in the governing case."]
+        : [],
+      invalid: strengthCases.length === 0,
+    })
+  );
+
+  const overturningRows = serviceBearing.map((result) => {
+    const restoringX = Math.max(result.axial, 0) * positive(geometry.footingWidth) / 2;
+    const restoringZ = Math.max(result.axial, 0) * positive(geometry.footingLength) / 2;
+    return {
+      name: result.name,
+      demandX: Math.abs(result.mx) * overturningSafetyFactor,
+      capacityX: restoringX,
+      demandZ: Math.abs(result.mz) * overturningSafetyFactor,
+      capacityZ: restoringZ,
+      fsX: Math.abs(result.mx) > EPS ? restoringX / Math.abs(result.mx) : Number.POSITIVE_INFINITY,
+      fsZ: Math.abs(result.mz) > EPS ? restoringZ / Math.abs(result.mz) : Number.POSITIVE_INFINITY,
+    };
+  });
+  const overturningXGoverning = governing(
+    overturningRows,
+    (row) => row.capacityX <= EPS ? Number.POSITIVE_INFINITY : row.demandX / row.capacityX
+  );
+  const overturningZGoverning = governing(
+    overturningRows,
+    (row) => row.capacityZ <= EPS ? Number.POSITIVE_INFINITY : row.demandZ / row.capacityZ
+  );
+  checks.push(
+    check({
+      id: "overturning-x",
+      label: "Overturning about X edge",
+      demand: overturningXGoverning?.demandX ?? null,
+      capacity: overturningXGoverning?.capacityX ?? null,
+      unit: "kN-m",
+      governingCase: overturningXGoverning?.name ?? "No service cases",
+      basis:
+        `Service stability check: ${overturningSafetyFactor} |Mx| <= N B/2.`,
+      details: overturningXGoverning
+        ? [`FS = ${Number.isFinite(overturningXGoverning.fsX) ? round(overturningXGoverning.fsX, 2) : "infinite"}.`]
+        : [],
+      invalid: serviceBearing.length === 0,
+    }),
+    check({
+      id: "overturning-z",
+      label: "Overturning about Z edge",
+      demand: overturningZGoverning?.demandZ ?? null,
+      capacity: overturningZGoverning?.capacityZ ?? null,
+      unit: "kN-m",
+      governingCase: overturningZGoverning?.name ?? "No service cases",
+      basis:
+        `Service stability check: ${overturningSafetyFactor} |Mz| <= N L/2.`,
+      details: overturningZGoverning
+        ? [`FS = ${Number.isFinite(overturningZGoverning.fsZ) ? round(overturningZGoverning.fsZ, 2) : "infinite"}.`]
+        : [],
+      invalid: serviceBearing.length === 0,
+    })
+  );
+
+  const settlementGoverning = governing(
+    serviceBearing,
+    (result) => result.settlement
+  );
+  checks.push(
+    check({
+      id: "service-settlement",
+      label: "Maximum Winkler settlement",
+      demand: settlementGoverning?.settlement ?? null,
+      capacity: materials.allowableSettlement,
+      unit: "mm",
+      governingCase: settlementGoverning?.name ?? "No service cases",
+      basis: "Serviceability check: s_max = q_max / k_s.",
+      details: settlementGoverning
+        ? [`qmax = ${round(settlementGoverning.maxBearing)} kPa.`]
+        : [],
+      notes: ["Does not include consolidation or layered-soil behavior."],
+      invalid: serviceBearing.length === 0,
+    })
+  );
+
+  const rotationXGoverning = governing(
+    serviceBearing,
+    (result) => result.rotationX
+  );
+  const rotationZGoverning = governing(
+    serviceBearing,
+    (result) => result.rotationZ
+  );
+  checks.push(
+    check({
+      id: "service-rotation-x",
+      label: "Footing rotation about X",
+      demand: rotationXGoverning?.rotationX ?? null,
+      capacity: materials.allowableRotationX,
+      unit: "rad",
+      governingCase: rotationXGoverning?.name ?? "No service cases",
+      basis: "Rigid-footing Winkler check: theta_x = |dq/dz| / k_s.",
+      details: rotationXGoverning
+        ? [`dq/dz = ${round(rotationXGoverning.qz)} kPa/m.`]
+        : [],
+      invalid: serviceBearing.length === 0,
+    }),
+    check({
+      id: "service-rotation-z",
+      label: "Footing rotation about Z",
+      demand: rotationZGoverning?.rotationZ ?? null,
+      capacity: materials.allowableRotationZ,
+      unit: "rad",
+      governingCase: rotationZGoverning?.name ?? "No service cases",
+      basis: "Rigid-footing Winkler check: theta_z = |dq/dx| / k_s.",
+      details: rotationZGoverning
+        ? [`dq/dx = ${round(rotationZGoverning.qx)} kPa/m.`]
+        : [],
+      invalid: serviceBearing.length === 0,
     })
   );
 

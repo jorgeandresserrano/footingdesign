@@ -12,6 +12,11 @@ import type {
   ReinforcementInputs,
   SoilTreatmentMode,
 } from "./footingEngine";
+import {
+  DEFAULT_DISPLAY_PRECISION,
+  displayDigitsForUnit,
+  type DisplayPrecisionSpec,
+} from "./displayPrecision";
 
 export type FootingReportUnitSystem = "SI" | "USC";
 
@@ -28,6 +33,7 @@ export interface FootingReportState {
   serviceLoadCases: EngineLoadCase[];
   strengthLoadCases: EngineLoadCase[];
   results: FootingDesignResult;
+  displayPrecision?: DisplayPrecisionSpec;
 }
 
 type ReportRow = {
@@ -62,9 +68,12 @@ const KN_M_TO_KIP_FT = 0.7375621493;
 const KN_PER_M_TO_KIP_PER_FT = KN_TO_KIP / M_TO_FT;
 const KN_M_PER_M_TO_KIP_FT_PER_FT = KN_M_TO_KIP_FT / M_TO_FT;
 const MM2_PER_M_TO_IN2_PER_FT = 0.0015500031 / M_TO_FT;
-const SERVICE_SLIDING_SAFETY_FACTOR = 1.5;
+const DEFAULT_SERVICE_SLIDING_SAFETY_FACTOR = 1.5;
+let activeDisplayPrecision: DisplayPrecisionSpec = DEFAULT_DISPLAY_PRECISION;
 
 export function createFootingCalculationBriefHtml(state: FootingReportState) {
+  const previousDisplayPrecision = activeDisplayPrecision;
+  activeDisplayPrecision = state.displayPrecision ?? DEFAULT_DISPLAY_PRECISION;
   const title = state.title.trim() || "Untitled footing";
   const generatedAt = formatReportDate(new Date());
   const isAci = state.concreteStandard.startsWith("ACI");
@@ -94,7 +103,7 @@ export function createFootingCalculationBriefHtml(state: FootingReportState) {
     ...(hasWarnings ? [{ id: "warnings", label: "Warnings" }] : []),
   ];
 
-  return `<!doctype html>
+  const html = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -452,7 +461,7 @@ export function createFootingCalculationBriefHtml(state: FootingReportState) {
     <ul>
       ${state.results.codeBasis.assumptions.map((item) => `<li>${mathText(item)}</li>`).join("")}
       <li>All load cases shown below are user-entered already-combined actions. No hidden load-combination generation is performed.</li>
-      <li>Pedestal design, anchorage into the pedestal, settlement, global geotechnical capacity, and soil-structure interaction beyond the ACI 336 advisory are outside this footing-slab check.</li>
+      <li>Pedestal design, anchorage into the pedestal, settlement, global geotechnical capacity, and soil-structure interaction beyond the adapted ACI 336.2R advisory are outside this footing-slab check.</li>
     </ul>
 
     <h2 id="technical-references">Technical References</h2>
@@ -552,6 +561,8 @@ export function createFootingCalculationBriefHtml(state: FootingReportState) {
 </script>
 </body>
 </html>`;
+  activeDisplayPrecision = previousDisplayPrecision;
+  return html;
 }
 
 function calculationSection(
@@ -567,15 +578,18 @@ function calculationSection(
       String.raw`A_s = A - A_p = ${q(data.soilArea, "m^2")}`,
       String.raw`S_x = \frac{B_x B_z^2}{6} = ${q(data.sx, "m^3")}`,
       String.raw`S_z = \frac{B_z B_x^2}{6} = ${q(data.sz, "m^3")}`,
+      String.raw`D_b = D_t + h = ${q(state.geometry.soilCoverDepth, "m")} + ${q(state.geometry.footingThickness, "m")} = ${q(state.geometry.soilCoverDepth + state.geometry.footingThickness, "m")}`,
     ])}
     ${calc("Concrete and soil weight", [
       String.raw`V_c = B_x B_z h`,
       String.raw`V_c = ${q(state.geometry.footingLength, "m")} \times ${q(state.geometry.footingWidth, "m")} \times ${q(state.geometry.footingThickness, "m")} = ${q(data.volume, "m^3")}`,
-      String.raw`W_f = V_c \gamma_c = ${q(data.volume, "m^3")} \times ${q(state.materials.concreteUnitWeight, "kN/m^3")} = ${q(state.results.summary.footingSelfWeight, "kN")}`,
-      String.raw`V_s = A_s h_s = ${q(data.soilArea, "m^2")} \times ${q(state.geometry.soilCoverDepth, "m")} = ${q(data.soilVolume, "m^3")}`,
-      String.raw`W_s = V_s \gamma_s = ${q(data.soilVolume, "m^3")} \times ${q(state.materials.soilUnitWeight, "kN/m^3")} = ${q(state.results.summary.soilOverburdenWeight, "kN")}`,
+      String.raw`W_f = A\left(h_{dry}\gamma_c + h_{wet}(\gamma_c-\gamma_w)\right) = ${q(state.results.summary.footingSelfWeight, "kN")}`,
+      String.raw`V_s = A_s D_t = ${q(data.soilArea, "m^2")} \times ${q(state.geometry.soilCoverDepth, "m")} = ${q(data.soilVolume, "m^3")}`,
+      String.raw`W_s = A_s\left(D_{dry}\gamma_s + D_{wet}(\gamma_{sat}-\gamma_w)\right) = ${q(state.results.summary.soilOverburdenWeight, "kN")}`,
+      String.raw`D_w = ${q(state.geometry.groundwaterDepth, "m")};\quad \gamma_{sat} = ${q(state.materials.saturatedSoilUnitWeight, "kN/m^3")};\quad \gamma_w = ${q(state.materials.waterUnitWeight, "kN/m^3")}`,
       String.raw`W_{svc} = W_f + \eta_{s,svc}W_s = ${q(state.results.summary.appliedServiceFoundationWeight, "kN")}`,
     ])}
+    ${checkCalc(state, "frost-depth")}
 
     <h3 class="calc-sub" id="load-transfer-bearing">Load Transfer and Bearing</h3>
     ${decision({
@@ -598,22 +612,28 @@ function calculationSection(
     ${serviceBearingCalculations(state)}
     ${checkCalc(state, "service-bearing")}
     ${checkCalc(state, "soil-contact")}
+    ${checkCalc(state, "factored-bearing")}
 
     <h3 class="calc-sub" id="sliding-rigidity">Sliding and Rigidity</h3>
     ${slidingCalculations(state)}
     ${checkCalc(state, "service-sliding")}
+    ${checkCalc(state, "overturning-x")}
+    ${checkCalc(state, "overturning-z")}
+    ${checkCalc(state, "service-settlement")}
+    ${checkCalc(state, "service-rotation-x")}
+    ${checkCalc(state, "service-rotation-z")}
     ${decision({
-      title: "ACI 336 rigidity advisory",
+      title: "Adapted ACI 336.2R rigidity advisory",
       branches: [
         {
           label: "Rigid",
-          condition: String.raw`L/L_e \le 1.75`,
+          condition: String.raw`L_{eff}/L_e \le 1.75`,
           active: state.results.rigidity.status === "rigid",
           consequence: "linear pressure assumption is reasonable for preliminary footing checks.",
         },
         {
           label: "Flexible",
-          condition: String.raw`L/L_e > 1.75`,
+          condition: String.raw`L_{eff}/L_e > 1.75`,
           active: state.results.rigidity.status === "flexible",
           consequence: "soil-structure interaction should be used instead of the linear pressure assumption.",
         },
@@ -708,13 +728,17 @@ function slidingCalculations(state: FootingReportState) {
       const horizontal = Math.hypot(loadCase.Hx, loadCase.Hz);
       const normal = loadCase.P + state.results.summary.appliedServiceFoundationWeight;
       const resisting = Math.max(normal, 0) * Math.max(state.materials.soilFrictionCoefficient, 0);
-      const available = resisting / SERVICE_SLIDING_SAFETY_FACTOR;
+      const slidingSafetyFactor = Math.max(
+        state.materials.slidingSafetyFactor || DEFAULT_SERVICE_SLIDING_SAFETY_FACTOR,
+        EPS
+      );
+      const available = resisting / slidingSafetyFactor;
       const fs = horizontal > EPS ? resisting / horizontal : Number.POSITIVE_INFINITY;
       return calc(`Service sliding - ${loadName(loadCase)}`, [
         String.raw`H = \sqrt{H_x^2 + H_z^2}`,
         String.raw`H = \sqrt{${q(loadCase.Hx, "kN")}^2 + ${q(loadCase.Hz, "kN")}^2} = ${q(horizontal, "kN")}`,
         String.raw`N = P + W_f + \eta_{s,svc}W_s = ${q(normal, "kN")}`,
-        String.raw`H_{allow} = \frac{\mu N}{1.5} = \frac{${num(state.materials.soilFrictionCoefficient, 2)} \times ${q(normal, "kN")}}{1.5} = ${q(available, "kN")}`,
+        String.raw`H_{allow} = \frac{\mu N}{FS_{sliding}} = \frac{${num(state.materials.soilFrictionCoefficient, 2)} \times ${q(normal, "kN")}}{${num(slidingSafetyFactor, 2)}} = ${q(available, "kN")}`,
         String.raw`FS = ${Number.isFinite(fs) ? num(fs, 2) : String.raw`\infty`}`,
       ]);
     })
@@ -728,11 +752,21 @@ function rigidityCalculations(state: FootingReportState, data: ReturnType<typeof
       String.raw`\text{Rigidity not classified because }E_c\text{ or }k_s\text{ is missing/nonpositive.}`,
     ]);
   }
+  const elasticLength = state.results.rigidity.elasticLength;
+  const maximumRigidProjection = (1.75 * elasticLength) / 4;
+  const governingRatio = Math.max(
+    state.results.rigidity.ratioX ?? 0,
+    state.results.rigidity.ratioZ ?? 0
+  );
   return calc("Rigidity advisory", [
     String.raw`L_e = \left(\frac{E_c h^3}{3k_s}\right)^{1/4}`,
-    String.raw`L_e = \left(\frac{${q(state.materials.concreteElasticModulus * 1000, "kN/m^2")} \times ${q(state.geometry.footingThickness, "m")}^3}{3 \times ${q(state.materials.subgradeReactionModulus, "kN/m^3")}}\right)^{1/4} = ${q(state.results.rigidity.elasticLength, "m")}`,
-    String.raw`L_x = ${q(data.projectionX, "m")};\quad L_z = ${q(data.projectionZ, "m")}`,
-    String.raw`\frac{L_x}{L_e} = ${num(state.results.rigidity.ratioX ?? 0)};\quad \frac{L_z}{L_e} = ${num(state.results.rigidity.ratioZ ?? 0)};\quad \text{limit}=1.75`,
+    String.raw`L_e = \left(\frac{${q(state.materials.concreteElasticModulus * 1000, "kN/m^2")} \times ${q(state.geometry.footingThickness, "m")}^3}{3 \times ${q(state.materials.subgradeReactionModulus, "kN/m^3")}}\right)^{1/4} = ${q(elasticLength, "m")}`,
+    String.raw`\text{ACI 336.2R Section 5.3 uses adjacent spans for strip footings; this isolated-footing advisory adapts that length as }L_{eff}=4a.`,
+    String.raw`\text{The projection }a\text{ is treated as one edge curvature length, so }4a\text{ approximates the span-like length used by the strip-footing criterion.}`,
+    String.raw`a_x = ${q(data.projectionX, "m")};\quad a_z = ${q(data.projectionZ, "m")}`,
+    String.raw`a_{max} = \frac{1.75L_e}{4} = ${q(maximumRigidProjection, "m")}`,
+    String.raw`L_{eff,x} = 4a_x = ${q(4 * data.projectionX, "m")};\quad L_{eff,z} = 4a_z = ${q(4 * data.projectionZ, "m")}`,
+    String.raw`\max\left(\frac{L_{eff}}{L_e}\right) = ${num(governingRatio)};\quad \text{limit}=1.75`,
   ]);
 }
 
@@ -906,17 +940,17 @@ function checkCalc(state: FootingReportState, id: string) {
 function detailTex(detail: string) {
   const normal = detail.match(/^N = ([0-9.,-]+) kN including footing self-weight(?: and (?:applied service )?soil overburden)?\.$/);
   if (normal) {
-    return String.raw`N = ${formatTexNumber(normal[1])}\,\mathrm{kN}\quad\text{including footing self-weight and applied service soil overburden}`;
+    return String.raw`N = ${formatTexNumberForUnit(normal[1], "kN")}\,\mathrm{kN}\quad\text{including footing self-weight and applied service soil overburden}`;
   }
 
   const moments = detail.match(/^Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m at footing center\.$/);
   if (moments) {
-    return String.raw`M_x = ${formatTexNumber(moments[1])}\,\mathrm{kN\cdot m},\quad M_z = ${formatTexNumber(moments[2])}\,\mathrm{kN\cdot m}\quad\text{at footing center}`;
+    return String.raw`M_x = ${formatTexNumberForUnit(moments[1], "kN-m")}\,\mathrm{kN\cdot m},\quad M_z = ${formatTexNumberForUnit(moments[2], "kN-m")}\,\mathrm{kN\cdot m}\quad\text{at footing center}`;
   }
 
   const qmin = detail.match(/^qmin = ([0-9.,-]+) kPa\.$/);
   if (qmin) {
-    return String.raw`q_{min} = ${formatTexNumber(qmin[1])}\,\mathrm{kPa}`;
+    return String.raw`q_{min} = ${formatTexNumberForUnit(qmin[1], "kPa")}\,\mathrm{kPa}`;
   }
 
   const fs = detail.match(/^FS = ([0-9.,-]+|infinite)\.$/);
@@ -926,17 +960,17 @@ function detailTex(detail: string) {
 
   const depths = detail.match(/^dX = ([0-9.,-]+) mm, dZ = ([0-9.,-]+) mm using conservative upper-layer depth for a two-layer orthogonal mat\.$/);
   if (depths) {
-    return String.raw`d_x = ${formatTexNumber(depths[1])}\,\mathrm{mm},\quad d_z = ${formatTexNumber(depths[2])}\,\mathrm{mm}\quad\text{using conservative upper-layer depth}`;
+    return String.raw`d_x = ${formatTexNumberForUnit(depths[1], "mm")}\,\mathrm{mm},\quad d_z = ${formatTexNumberForUnit(depths[2], "mm")}\,\mathrm{mm}\quad\text{using conservative upper-layer depth}`;
   }
 
   const asX = detail.match(/^Provided AsX = ([0-9.,-]+) mm2\/m\.$/);
   if (asX) {
-    return String.raw`A_{s,x} = ${formatTexNumber(asX[1])}\,\mathrm{mm^2/m}`;
+    return String.raw`A_{s,x} = ${formatTexNumberForUnit(asX[1], "mm2/m")}\,\mathrm{mm^2/m}`;
   }
 
   const asZ = detail.match(/^Provided AsZ = ([0-9.,-]+) mm2\/m\.$/);
   if (asZ) {
-    return String.raw`A_{s,z} = ${formatTexNumber(asZ[1])}\,\mathrm{mm^2/m}`;
+    return String.raw`A_{s,z} = ${formatTexNumberForUnit(asZ[1], "mm2/m")}\,\mathrm{mm^2/m}`;
   }
 
   const side = detail.match(/^Critical side = ([^.]+)\.$/);
@@ -946,12 +980,12 @@ function detailTex(detail: string) {
 
   const requiredAs = detail.match(/^Required As = ([0-9.,-]+) mm2\/m; provided As = ([0-9.,-]+) mm2\/m\.$/);
   if (requiredAs) {
-    return String.raw`A_{s,req} = ${formatTexNumber(requiredAs[1])}\,\mathrm{mm^2/m},\quad A_s = ${formatTexNumber(requiredAs[2])}\,\mathrm{mm^2/m}`;
+    return String.raw`A_{s,req} = ${formatTexNumberForUnit(requiredAs[1], "mm2/m")}\,\mathrm{mm^2/m},\quad A_s = ${formatTexNumberForUnit(requiredAs[2], "mm2/m")}\,\mathrm{mm^2/m}`;
   }
 
   const cLimit = detail.match(/^c = ([0-9.,-]+) mm, limit = ([0-9.,-]+) mm\.$/);
   if (cLimit) {
-    return String.raw`c = ${formatTexNumber(cLimit[1])}\,\mathrm{mm},\quad c_{limit} = ${formatTexNumber(cLimit[2])}\,\mathrm{mm}`;
+    return String.raw`c = ${formatTexNumberForUnit(cLimit[1], "mm")}\,\mathrm{mm},\quad c_{limit} = ${formatTexNumberForUnit(cLimit[2], "mm")}\,\mathrm{mm}`;
   }
 
   const support = detail.match(/^Support condition = ([^.]+)\.$/);
@@ -961,7 +995,7 @@ function detailTex(detail: string) {
 
   const punchingGeometry = detail.match(/^bo = ([0-9.,-]+) mm, d = ([0-9.,-]+) mm\.$/);
   if (punchingGeometry) {
-    return String.raw`b_o = ${formatTexNumber(punchingGeometry[1])}\,\mathrm{mm},\quad d = ${formatTexNumber(punchingGeometry[2])}\,\mathrm{mm}`;
+    return String.raw`b_o = ${formatTexNumberForUnit(punchingGeometry[1], "mm")}\,\mathrm{mm},\quad d = ${formatTexNumberForUnit(punchingGeometry[2], "mm")}\,\mathrm{mm}`;
   }
 
   const punchingStress = detail.match(
@@ -1009,29 +1043,39 @@ function denseGrid(rows: ReportRow[]) {
 function inputRows(state: FootingReportState): ReportRow[] {
   const u = units(state.units);
   return [
-    { key: "A-qa", symbol: "q_a", label: "allowable bearing", value: f(convert(state.materials.allowableBearing, "kPa", state.units), 3), unit: u.pressure },
-    { key: "B-Bx", symbol: "B_x", label: "footing length", value: f(convert(state.geometry.footingLength, "m", state.units), 3), unit: u.length },
-    { key: "B-Bz", symbol: "B_z", label: "footing width", value: f(convert(state.geometry.footingWidth, "m", state.units), 3), unit: u.length },
-    { key: "C-cover", symbol: "c_c", label: "clear cover", value: f(convert(state.materials.clearCover, "mm", state.units), 3), unit: u.cover },
-    { key: "D-dbx", symbol: "d_{b,x}", label: "X bar diameter", value: f(convert(state.reinforcement.barDiameterX, "mm", state.units), 3), unit: u.cover },
-    { key: "D-dbz", symbol: "d_{b,z}", label: "Z bar diameter", value: f(convert(state.reinforcement.barDiameterZ, "mm", state.units), 3), unit: u.cover },
-    { key: "E-Ec", symbol: "E_c", label: "concrete modulus", value: f(convert(state.materials.concreteElasticModulus, "MPa", state.units), 3), unit: u.stress },
-    { key: "F-fc", symbol: "f'_c", label: "concrete strength", value: f(convert(state.materials.concreteStrength, "MPa", state.units), 3), unit: u.stress },
-    { key: "F-fy", symbol: "f_y", label: "rebar yield", value: f(convert(state.materials.rebarYield, "MPa", state.units), 3), unit: u.stress },
-    { key: "H-h", symbol: "h", label: "footing thickness", value: f(convert(state.geometry.footingThickness, "m", state.units), 3), unit: u.length },
-    { key: "H-hp", symbol: "h_p", label: "pedestal height", value: f(convert(state.geometry.pedestalHeight, "m", state.units), 3), unit: u.length },
-    { key: "H-hs", symbol: "h_s", label: "soil cover depth", value: f(convert(state.geometry.soilCoverDepth, "m", state.units), 3), unit: u.length },
-    { key: "K-ks", symbol: "k_s", label: "subgrade reaction", value: f(convert(state.materials.subgradeReactionModulus, "kN/m3", state.units), 3), unit: u.subgrade },
-    { key: "L-Lpx", symbol: "L_{p,x}", label: "pedestal length", value: f(convert(state.geometry.pedestalLength, "m", state.units), 3), unit: u.length },
-    { key: "L-Lpz", symbol: "L_{p,z}", label: "pedestal width", value: f(convert(state.geometry.pedestalWidth, "m", state.units), 3), unit: u.length },
-    { key: "S-sx", symbol: "s_x", label: "X bar spacing", value: f(convert(state.reinforcement.barSpacingX, "mm", state.units), 3), unit: u.cover },
-    { key: "S-sz", symbol: "s_z", label: "Z bar spacing", value: f(convert(state.reinforcement.barSpacingZ, "mm", state.units), 3), unit: u.cover },
+    { key: "A-settlement", symbol: "s_{allow}", label: "allowable settlement", value: fv(convert(state.materials.allowableSettlement, "mm", state.units), u.cover), unit: u.cover },
+    { key: "A-qa", symbol: "q_a", label: "allowable bearing", value: fv(convert(state.materials.allowableBearing, "kPa", state.units), u.pressure), unit: u.pressure },
+    { key: "B-qu", symbol: "q_u", label: "ultimate bearing", value: fv(convert(state.materials.ultimateBearing, "kPa", state.units), u.pressure), unit: u.pressure },
+    { key: "B-Bx", symbol: "B_x", label: "footing length", value: fv(convert(state.geometry.footingLength, "m", state.units), u.length), unit: u.length },
+    { key: "B-Bz", symbol: "B_z", label: "footing width", value: fv(convert(state.geometry.footingWidth, "m", state.units), u.length), unit: u.length },
+    { key: "C-cover", symbol: "c_c", label: "clear cover", value: fv(convert(state.materials.clearCover, "mm", state.units), u.cover), unit: u.cover },
+    { key: "D-dbx", symbol: "d_{b,x}", label: "X bar diameter", value: fv(convert(state.reinforcement.barDiameterX, "mm", state.units), u.cover), unit: u.cover },
+    { key: "D-dbz", symbol: "d_{b,z}", label: "Z bar diameter", value: fv(convert(state.reinforcement.barDiameterZ, "mm", state.units), u.cover), unit: u.cover },
+    { key: "E-Ec", symbol: "E_c", label: "concrete modulus", value: fv(convert(state.materials.concreteElasticModulus, "MPa", state.units), u.stress), unit: u.stress },
+    { key: "F-fc", symbol: "f'_c", label: "concrete strength", value: fv(convert(state.materials.concreteStrength, "MPa", state.units), u.stress), unit: u.stress },
+    { key: "F-fy", symbol: "f_y", label: "rebar yield", value: fv(convert(state.materials.rebarYield, "MPa", state.units), u.stress), unit: u.stress },
+    { key: "H-h", symbol: "h", label: "footing thickness", value: fv(convert(state.geometry.footingThickness, "m", state.units), u.length), unit: u.length },
+    { key: "H-hp", symbol: "h_p", label: "pedestal height", value: fv(convert(state.geometry.pedestalHeight, "m", state.units), u.length), unit: u.length },
+    { key: "D-df", symbol: "D_f", label: "frost depth", value: fv(convert(state.geometry.frostDepth, "m", state.units), u.length), unit: u.length },
+    { key: "D-dt", symbol: "D_t", label: "footing top depth", value: fv(convert(state.geometry.soilCoverDepth, "m", state.units), u.length), unit: u.length },
+    { key: "D-dw", symbol: "D_w", label: "groundwater depth", value: fv(convert(state.geometry.groundwaterDepth, "m", state.units), u.length), unit: u.length },
+    { key: "K-ks", symbol: "k_s", label: "subgrade reaction", value: fv(convert(state.materials.subgradeReactionModulus, "kN/m3", state.units), u.subgrade), unit: u.subgrade },
+    { key: "M-FS-ot", symbol: "FS_{OT}", label: "overturning safety factor", value: f(state.materials.overturningSafetyFactor, 2), unit: "" },
+    { key: "M-FS-sliding", symbol: "FS_{sliding}", label: "sliding safety factor", value: f(state.materials.slidingSafetyFactor, 2), unit: "" },
+    { key: "L-Lpx", symbol: "L_{p,x}", label: "pedestal length", value: fv(convert(state.geometry.pedestalLength, "m", state.units), u.length), unit: u.length },
+    { key: "L-Lpz", symbol: "L_{p,z}", label: "pedestal width", value: fv(convert(state.geometry.pedestalWidth, "m", state.units), u.length), unit: u.length },
+    { key: "S-sx", symbol: "s_x", label: "X bar spacing", value: fv(convert(state.reinforcement.barSpacingX, "mm", state.units), u.cover), unit: u.cover },
+    { key: "S-sz", symbol: "s_z", label: "Z bar spacing", value: fv(convert(state.reinforcement.barSpacingZ, "mm", state.units), u.cover), unit: u.cover },
     { key: "S-soil-treatment", symbol: "\\eta_s", label: "soil treatment", value: soilTreatmentLabel(state.soilTreatmentMode), unit: "" },
-    { key: "X-ex", symbol: "e_x", label: "pedestal offset X", value: f(convert(state.geometry.pedestalOffsetX, "m", state.units), 3), unit: u.length },
-    { key: "Z-ez", symbol: "e_z", label: "pedestal offset Z", value: f(convert(state.geometry.pedestalOffsetZ, "m", state.units), 3), unit: u.length },
-    { key: "zz-gamma", symbol: "\\gamma_c", label: "concrete unit weight", value: f(convert(state.materials.concreteUnitWeight, "kN/m3", state.units), 3), unit: u.unitWeight },
-    { key: "zz-gamma-s", symbol: "\\gamma_s", label: "soil unit weight", value: f(convert(state.materials.soilUnitWeight, "kN/m3", state.units), 3), unit: u.unitWeight },
+    { key: "X-ex", symbol: "e_x", label: "pedestal offset X", value: fv(convert(state.geometry.pedestalOffsetX, "m", state.units), u.length), unit: u.length },
+    { key: "Z-ez", symbol: "e_z", label: "pedestal offset Z", value: fv(convert(state.geometry.pedestalOffsetZ, "m", state.units), u.length), unit: u.length },
+    { key: "zz-gamma", symbol: "\\gamma_c", label: "concrete unit weight", value: fv(convert(state.materials.concreteUnitWeight, "kN/m3", state.units), u.unitWeight), unit: u.unitWeight },
+    { key: "zz-gamma-s", symbol: "\\gamma_s", label: "soil unit weight", value: fv(convert(state.materials.soilUnitWeight, "kN/m3", state.units), u.unitWeight), unit: u.unitWeight },
+    { key: "zz-gamma-sat", symbol: "\\gamma_{sat}", label: "saturated soil unit weight", value: fv(convert(state.materials.saturatedSoilUnitWeight, "kN/m3", state.units), u.unitWeight), unit: u.unitWeight },
+    { key: "zz-gamma-w", symbol: "\\gamma_w", label: "water unit weight", value: fv(convert(state.materials.waterUnitWeight, "kN/m3", state.units), u.unitWeight), unit: u.unitWeight },
     { key: "zz-mu", symbol: "\\mu", label: "soil friction coefficient", value: f(state.materials.soilFrictionCoefficient, 3), unit: "" },
+    { key: "zz-theta-x", symbol: "\\theta_{x,allow}", label: "allowable rotation X", value: f(state.materials.allowableRotationX, 4), unit: "rad" },
+    { key: "zz-theta-z", symbol: "\\theta_{z,allow}", label: "allowable rotation Z", value: f(state.materials.allowableRotationZ, 4), unit: "rad" },
   ];
 }
 
@@ -1041,22 +1085,22 @@ function computedRows(state: FootingReportState): ReportRow[] {
   const governingService = maxBy(state.results.serviceBearing, (row) => row.maxBearing);
   const governingStrength = maxBy(state.results.strengthCases, (row) => row.maxNetPressure);
   return [
-    { key: "A-area", symbol: "A", label: "footing plan area", value: f(convert(data.area, "m2", state.units), 3), unit: u.area },
-    { key: "A-As-min-x", symbol: "A_{s,min,x}", label: "minimum X steel", value: f(convert(state.results.summary.minimumAsX, "mm2/m", state.units), 0), unit: u.steel },
-    { key: "A-As-min-z", symbol: "A_{s,min,z}", label: "minimum Z steel", value: f(convert(state.results.summary.minimumAsZ, "mm2/m", state.units), 0), unit: u.steel },
-    { key: "A-As-x", symbol: "A_{s,x}", label: "provided X steel", value: f(convert(state.results.summary.providedAsX, "mm2/m", state.units), 0), unit: u.steel },
-    { key: "A-As-z", symbol: "A_{s,z}", label: "provided Z steel", value: f(convert(state.results.summary.providedAsZ, "mm2/m", state.units), 0), unit: u.steel },
-    { key: "D-davg", symbol: "d_{avg}", label: "average shear depth", value: f(convert(state.results.summary.averageShearDepth, "mm", state.units), 1), unit: u.cover },
-    { key: "D-dx", symbol: "d_x", label: "effective depth X", value: f(convert(state.results.summary.effectiveDepthX, "mm", state.units), 1), unit: u.cover },
-    { key: "D-dz", symbol: "d_z", label: "effective depth Z", value: f(convert(state.results.summary.effectiveDepthZ, "mm", state.units), 1), unit: u.cover },
-    { key: "L-Le", symbol: "L_e", label: "elastic length", value: state.results.rigidity.elasticLength === null ? "N/A" : f(convert(state.results.rigidity.elasticLength, "m", state.units), 3), unit: u.length },
-    { key: "Q-qmax", symbol: "q_{max}", label: "max service bearing", value: governingService ? f(convert(governingService.maxBearing, "kPa", state.units), 3) : "N/A", unit: u.pressure },
-    { key: "Q-qnet", symbol: "q_{net,max}", label: "max strength net pressure", value: governingStrength ? f(convert(governingStrength.maxNetPressure, "kPa", state.units), 3) : "N/A", unit: u.pressure },
+    { key: "A-area", symbol: "A", label: "footing plan area", value: fv(convert(data.area, "m2", state.units), u.area), unit: u.area },
+    { key: "A-As-min-x", symbol: "A_{s,min,x}", label: "minimum X steel", value: fv(convert(state.results.summary.minimumAsX, "mm2/m", state.units), u.steel), unit: u.steel },
+    { key: "A-As-min-z", symbol: "A_{s,min,z}", label: "minimum Z steel", value: fv(convert(state.results.summary.minimumAsZ, "mm2/m", state.units), u.steel), unit: u.steel },
+    { key: "A-As-x", symbol: "A_{s,x}", label: "provided X steel", value: fv(convert(state.results.summary.providedAsX, "mm2/m", state.units), u.steel), unit: u.steel },
+    { key: "A-As-z", symbol: "A_{s,z}", label: "provided Z steel", value: fv(convert(state.results.summary.providedAsZ, "mm2/m", state.units), u.steel), unit: u.steel },
+    { key: "D-davg", symbol: "d_{avg}", label: "average shear depth", value: fv(convert(state.results.summary.averageShearDepth, "mm", state.units), u.cover), unit: u.cover },
+    { key: "D-dx", symbol: "d_x", label: "effective depth X", value: fv(convert(state.results.summary.effectiveDepthX, "mm", state.units), u.cover), unit: u.cover },
+    { key: "D-dz", symbol: "d_z", label: "effective depth Z", value: fv(convert(state.results.summary.effectiveDepthZ, "mm", state.units), u.cover), unit: u.cover },
+    { key: "L-Le", symbol: "L_e", label: "elastic length", value: state.results.rigidity.elasticLength === null ? "N/A" : fv(convert(state.results.rigidity.elasticLength, "m", state.units), u.length), unit: u.length },
+    { key: "Q-qmax", symbol: "q_{max}", label: "max service bearing", value: governingService ? fv(convert(governingService.maxBearing, "kPa", state.units), u.pressure) : "N/A", unit: u.pressure },
+    { key: "Q-qnet", symbol: "q_{net,max}", label: "max strength net pressure", value: governingStrength ? fv(convert(governingStrength.maxNetPressure, "kPa", state.units), u.pressure) : "N/A", unit: u.pressure },
     { key: "S-status", symbol: "\\text{Status}", label: "overall status", value: statusLabel(state.results.summary.overallStatus), unit: "" },
-    { key: "V-volume", symbol: "V_c", label: "concrete volume", value: f(convert(data.volume, "m3", state.units), 3), unit: u.volume },
-    { key: "W-self", symbol: "W_f", label: "footing self-weight", value: f(convert(state.results.summary.footingSelfWeight, "kN", state.units), 3), unit: u.force },
-    { key: "W-soil", symbol: "W_s", label: "soil overburden", value: f(convert(state.results.summary.soilOverburdenWeight, "kN", state.units), 3), unit: u.force },
-    { key: "W-total", symbol: "W_{svc}", label: "applied service foundation weight", value: f(convert(state.results.summary.appliedServiceFoundationWeight, "kN", state.units), 3), unit: u.force },
+    { key: "V-volume", symbol: "V_c", label: "concrete volume", value: fv(convert(data.volume, "m3", state.units), u.volume), unit: u.volume },
+    { key: "W-self", symbol: "W_f", label: "footing self-weight", value: fv(convert(state.results.summary.footingSelfWeight, "kN", state.units), u.force), unit: u.force },
+    { key: "W-soil", symbol: "W_s", label: "soil overburden", value: fv(convert(state.results.summary.soilOverburdenWeight, "kN", state.units), u.force), unit: u.force },
+    { key: "W-total", symbol: "W_{svc}", label: "applied service foundation weight", value: fv(convert(state.results.summary.appliedServiceFoundationWeight, "kN", state.units), u.force), unit: u.force },
   ];
 }
 
@@ -1073,12 +1117,12 @@ function loadCasesTable(state: FootingReportState, kind: "service" | "strength")
         .map(
           (row) => `<tr>
             <td>${esc(loadName(row))}</td>
-            <td class="num">${f(convert(row.P, "kN", state.units), 3)}</td>
-            <td class="num">${f(convert(row.Hx, "kN", state.units), 3)}</td>
-            <td class="num">${f(convert(row.Hz, "kN", state.units), 3)}</td>
-            <td class="num">${f(convert(row.Mx, "kN-m", state.units), 3)}</td>
-            <td class="num">${f(convert(row.Mz, "kN-m", state.units), 3)}</td>
-            <td class="num">${f(convert(row.T, "kN-m", state.units), 3)}</td>
+            <td class="num">${fv(convert(row.P, "kN", state.units), u.force)}</td>
+            <td class="num">${fv(convert(row.Hx, "kN", state.units), u.force)}</td>
+            <td class="num">${fv(convert(row.Hz, "kN", state.units), u.force)}</td>
+            <td class="num">${fv(convert(row.Mx, "kN-m", state.units), u.moment)}</td>
+            <td class="num">${fv(convert(row.Mz, "kN-m", state.units), u.moment)}</td>
+            <td class="num">${fv(convert(row.T, "kN-m", state.units), u.moment)}</td>
             ${kind === "strength" ? `<td class="num">${f(row.foundationDeadLoadFactor, 3)}</td>` : ""}
           </tr>`
         )
@@ -1120,7 +1164,7 @@ function traceMapTable(
     ["Self-weight", "Concrete volume times concrete unit weight", "Included in service bearing/sliding normal force."],
     ["Service bearing", "All service load cases", "Worst qmax controls bearing; qmin controls no-uplift."],
     ["Sliding", "All service load cases", "Worst H/(mu N / 1.5) controls."],
-    ["Rigidity", "ACI 336 advisory", "Rigid, flexible, or needs ks/Ec."],
+    ["Rigidity", "Adapted ACI 336.2R advisory", "Rigid, flexible, or needs ks/Ec."],
     ["Concrete family", flags.isAci ? "ACI branch taken" : "CSA branch taken", flags.isAci ? "CSA ductility not applicable." : "CSA ductility checks included."],
     ["Strength actions", "All strength load cases", "Worst flexure, one-way shear, and punching demands govern separately."],
     ["Punching", "Critical perimeter at d/2", "Direct shear plus moment-transfer stress."],
@@ -1409,11 +1453,13 @@ function displayUnit(unit: CheckUnit, unitSystem: FootingReportUnitSystem) {
   if (unit === "none" || unit === "ratio") return "";
   if (unitSystem === "SI") {
     if (unit === "mm2/m") return "mm2/m";
+    if (unit === "kN-m") return "kN m";
     if (unit === "kN-m/m") return "kN m/m";
     return unit;
   }
   if (unit === "kPa") return "ksf";
   if (unit === "kN") return "kip";
+  if (unit === "kN-m") return "kip ft";
   if (unit === "kN/m") return "kip/ft";
   if (unit === "kN-m/m") return "kip ft/ft";
   if (unit === "MPa") return "ksi";
@@ -1453,6 +1499,7 @@ function units(unitSystem: FootingReportUnitSystem) {
 }
 
 function unitTex(unit: CheckUnit) {
+  if (unit === "kN-m") return "kN m";
   if (unit === "kN-m/m") return "kN m/m";
   if (unit === "mm2/m") return "mm^2/m";
   if (unit === "none" || unit === "ratio") return "";
@@ -1460,7 +1507,7 @@ function unitTex(unit: CheckUnit) {
 }
 
 function displayDigits(unit: CheckUnit) {
-  return ["mm", "mm2/m", "kPa", "kN", "kN/m", "kN-m/m"].includes(unit) ? 0 : 3;
+  return displayDigitsForUnit(displayUnit(unit, "SI"), activeDisplayPrecision);
 }
 
 function statusPill(status: CheckStatus) {
@@ -1522,11 +1569,16 @@ function positive(value: number) {
   return Math.max(Number.isFinite(value) ? value : 0, EPS);
 }
 
-function q(value: number, unit: string, digits = 3) {
+function q(
+  value: number | null,
+  unit: string,
+  digits = displayDigitsForUnit(unit, activeDisplayPrecision)
+) {
   return `${num(value, digits)}\\,\\mathrm{${escapeTex(unit)}}`;
 }
 
-function num(value: number, digits = 3) {
+function num(value: number | null, digits = 3) {
+  if (value === null) return "\\text{N/A}";
   if (!Number.isFinite(value)) return String.raw`\infty`;
   return f(value, digits).replace(/,/g, "{,}");
 }
@@ -1535,6 +1587,10 @@ function f(value: number, digits = 3) {
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: digits,
   }).format(value);
+}
+
+function fv(value: number, unit: string, digits?: number) {
+  return f(value, digits ?? displayDigitsForUnit(unit, activeDisplayPrecision));
 }
 
 function math(tex: string, displayMode = false) {
@@ -1555,9 +1611,9 @@ function mathText(text: string) {
   const html = esc(text)
     .replace(/q = P\/A \+\/- Mx\/Sx \+\/- Mz\/Sz/g, () => token(String.raw`q = \frac{P}{A}\pm\frac{M_x}{S_x}\pm\frac{M_z}{S_z}`))
     .replace(/H &lt;= mu N \/ 1.5/g, () => token(String.raw`H \le \frac{\mu N}{1.5}`))
-    .replace(/N = ([0-9.,-]+) kN including footing self-weight(?: and (?:applied service )?soil overburden)?\./g, (_, n) => token(String.raw`N = ${formatTexNumber(n)}\,\mathrm{kN}\quad\text{including footing self-weight and applied service soil overburden}`))
-    .replace(/Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m at footing center\./g, (_, mx, mz) => token(String.raw`M_x = ${formatTexNumber(mx)}\,\mathrm{kN\cdot m},\quad M_z = ${formatTexNumber(mz)}\,\mathrm{kN\cdot m}\quad\text{at footing center}`))
-    .replace(/qmin = ([0-9.,-]+) kPa\./g, (_, qmin) => token(String.raw`q_{min} = ${formatTexNumber(qmin)}\,\mathrm{kPa}`))
+    .replace(/N = ([0-9.,-]+) kN including footing self-weight(?: and (?:applied service )?soil overburden)?\./g, (_, n) => token(String.raw`N = ${formatTexNumberForUnit(n, "kN")}\,\mathrm{kN}\quad\text{including footing self-weight and applied service soil overburden}`))
+    .replace(/Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m at footing center\./g, (_, mx, mz) => token(String.raw`M_x = ${formatTexNumberForUnit(mx, "kN-m")}\,\mathrm{kN\cdot m},\quad M_z = ${formatTexNumberForUnit(mz, "kN-m")}\,\mathrm{kN\cdot m}\quad\text{at footing center}`))
+    .replace(/qmin = ([0-9.,-]+) kPa\./g, (_, qmin) => token(String.raw`q_{min} = ${formatTexNumberForUnit(qmin, "kPa")}\,\mathrm{kPa}`))
     .replace(/FS = ([0-9.,-]+|infinite)\./g, (_, fs) => token(String.raw`\mathrm{FS} = ${fs === "infinite" ? String.raw`\infty` : formatTexNumber(fs)}`))
     .replace(/phi = 0\.90/g, () => token(String.raw`\phi = 0.90`))
     .replace(/phi_c = 0\.65/g, () => token(String.raw`\phi_c = 0.65`))
@@ -1573,14 +1629,14 @@ function mathText(text: string) {
     .replace(/\bqmin\b/g, () => token(String.raw`q_{min}`))
     .replace(/\bEc\b/g, () => token(String.raw`E_c`))
     .replace(/\bks\b/g, () => token(String.raw`k_s`))
-    .replace(/dX = ([0-9.,-]+) mm, dZ = ([0-9.,-]+) mm using conservative upper-layer depth for a two-layer orthogonal mat\./g, (_, dx, dz) => token(String.raw`d_x = ${formatTexNumber(dx)}\,\mathrm{mm},\quad d_z = ${formatTexNumber(dz)}\,\mathrm{mm}\quad\text{using conservative upper-layer depth}`))
-    .replace(/Provided AsX = ([0-9.,-]+) mm2\/m\./g, (_, asx) => token(String.raw`A_{s,x} = ${formatTexNumber(asx)}\,\mathrm{mm^2/m}`))
-    .replace(/Provided AsZ = ([0-9.,-]+) mm2\/m\./g, (_, asz) => token(String.raw`A_{s,z} = ${formatTexNumber(asz)}\,\mathrm{mm^2/m}`))
+    .replace(/dX = ([0-9.,-]+) mm, dZ = ([0-9.,-]+) mm using conservative upper-layer depth for a two-layer orthogonal mat\./g, (_, dx, dz) => token(String.raw`d_x = ${formatTexNumberForUnit(dx, "mm")}\,\mathrm{mm},\quad d_z = ${formatTexNumberForUnit(dz, "mm")}\,\mathrm{mm}\quad\text{using conservative upper-layer depth}`))
+    .replace(/Provided AsX = ([0-9.,-]+) mm2\/m\./g, (_, asx) => token(String.raw`A_{s,x} = ${formatTexNumberForUnit(asx, "mm2/m")}\,\mathrm{mm^2/m}`))
+    .replace(/Provided AsZ = ([0-9.,-]+) mm2\/m\./g, (_, asz) => token(String.raw`A_{s,z} = ${formatTexNumberForUnit(asz, "mm2/m")}\,\mathrm{mm^2/m}`))
     .replace(/Critical side = ([^.]+)\./g, (_, side) => token(String.raw`\text{Critical side} = \text{${escapeTex(side)}}`))
-    .replace(/Required As = ([0-9.,-]+) mm2\/m; provided As = ([0-9.,-]+) mm2\/m\./g, (_, required, provided) => token(String.raw`A_{s,req} = ${formatTexNumber(required)}\,\mathrm{mm^2/m},\quad A_s = ${formatTexNumber(provided)}\,\mathrm{mm^2/m}`))
-    .replace(/c = ([0-9.,-]+) mm, limit = ([0-9.,-]+) mm\./g, (_, c, limit) => token(String.raw`c = ${formatTexNumber(c)}\,\mathrm{mm},\quad c_{limit} = ${formatTexNumber(limit)}\,\mathrm{mm}`))
+    .replace(/Required As = ([0-9.,-]+) mm2\/m; provided As = ([0-9.,-]+) mm2\/m\./g, (_, required, provided) => token(String.raw`A_{s,req} = ${formatTexNumberForUnit(required, "mm2/m")}\,\mathrm{mm^2/m},\quad A_s = ${formatTexNumberForUnit(provided, "mm2/m")}\,\mathrm{mm^2/m}`))
+    .replace(/c = ([0-9.,-]+) mm, limit = ([0-9.,-]+) mm\./g, (_, c, limit) => token(String.raw`c = ${formatTexNumberForUnit(c, "mm")}\,\mathrm{mm},\quad c_{limit} = ${formatTexNumberForUnit(limit, "mm")}\,\mathrm{mm}`))
     .replace(/Support condition = ([^.]+)\./g, (_, support) => token(String.raw`\text{Support condition} = \text{${escapeTex(support)}}`))
-    .replace(/bo = ([0-9.,-]+) mm, d = ([0-9.,-]+) mm\./g, (_, bo, d) => token(String.raw`b_o = ${formatTexNumber(bo)}\,\mathrm{mm},\quad d = ${formatTexNumber(d)}\,\mathrm{mm}`))
+    .replace(/bo = ([0-9.,-]+) mm, d = ([0-9.,-]+) mm\./g, (_, bo, d) => token(String.raw`b_o = ${formatTexNumberForUnit(bo, "mm")}\,\mathrm{mm},\quad d = ${formatTexNumberForUnit(d, "mm")}\,\mathrm{mm}`))
     .replace(/vu direct = ([0-9.,-]+) MPa, vu\(Mx\) = ([0-9.,-]+) MPa, vu\(Mz\) = ([0-9.,-]+) MPa\./g, (_, direct, mx, mz) => token(String.raw`v_{u,direct} = ${formatTexNumber(direct)}\,\mathrm{MPa},\quad v_u(M_x) = ${formatTexNumber(mx)}\,\mathrm{MPa},\quad v_u(M_z) = ${formatTexNumber(mz)}\,\mathrm{MPa}`))
     .replace(/phi Vc = 0\.75 x 0\.17 lambda sqrt\(fc&#39;\) bw d/g, () => token(String.raw`\phi V_c = 0.75 \times 0.17\lambda\sqrt{f'_c}b_wd`))
     .replace(/phi vc = 0\.75 x least concrete two-way shear stress/g, () => token(String.raw`\phi v_c = 0.75 \times \text{least concrete two-way shear stress}`))
@@ -1591,7 +1647,15 @@ function mathText(text: string) {
 }
 
 function formatTexNumber(value: string) {
-  return value.replace(/,/g, "{,}");
+  const parsed = Number(value.replace(/,/g, ""));
+  return Number.isFinite(parsed) ? num(parsed) : value.replace(/,/g, "{,}");
+}
+
+function formatTexNumberForUnit(value: string, unit: string) {
+  const parsed = Number(value.replace(/,/g, ""));
+  return Number.isFinite(parsed)
+    ? num(parsed, displayDigitsForUnit(unit, activeDisplayPrecision))
+    : value.replace(/,/g, "{,}");
 }
 
 function texText(text: string) {

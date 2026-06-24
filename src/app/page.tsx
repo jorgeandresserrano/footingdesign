@@ -21,6 +21,8 @@ import {
   useMemo,
   useRef,
   useState,
+  createContext,
+  useContext,
   type ClipboardEvent,
   type KeyboardEvent,
   type ReactNode,
@@ -70,6 +72,13 @@ import {
   type SoilTreatmentMode,
 } from "@/lib/footingEngine";
 import { createFootingCalculationBriefHtml } from "@/lib/footingReport";
+import {
+  DEFAULT_DISPLAY_PRECISION,
+  DISPLAY_PRECISION_ROWS,
+  clampDisplayDigits,
+  displayDigitsForUnit,
+  type DisplayPrecisionSpec,
+} from "@/lib/displayPrecision";
 
 const FootingModel3d = dynamic(
   () =>
@@ -112,36 +121,33 @@ const KN_PER_M_TO_KIP_PER_FT = KN_TO_KIP / M_TO_FT;
 const KN_M_PER_M_TO_KIP_FT_PER_FT = KN_M_TO_KIP_FT / M_TO_FT;
 const MM2_PER_M_TO_IN2_PER_FT = 0.0015500031 / M_TO_FT;
 const PCI_TO_KN_M3 = 271.4471412;
-const APP_DATE = "2026-06-16";
-const APP_VERSION = "3";
+const APP_DATE = "2026-06-24";
+const APP_VERSION = "7";
+const DisplayPrecisionContext = createContext<DisplayPrecisionSpec>(
+  DEFAULT_DISPLAY_PRECISION
+);
 
-function displayDigitsForUnit(unit?: string) {
-  return unit &&
-    [
-      "mm",
-      "mm²",
-      "mm²/m",
-      "mm2/m",
-      "kN",
-      "kN/m",
-      "kPa",
-      "kN·m",
-      "kN-m",
-      "kN·m/m",
-      "kN-m/m",
-    ].includes(unit)
-    ? 0
-    : 3;
+function useDisplayPrecision() {
+  return useContext(DisplayPrecisionContext);
 }
 
-function formatForUnit(value: number, unit?: string, digits?: number) {
-  return fmt(value, digits ?? displayDigitsForUnit(unit));
+function formatForUnit(
+  value: number,
+  unit?: string,
+  digits?: number,
+  precision?: DisplayPrecisionSpec
+) {
+  return fmt(value, digits ?? displayDigitsForUnit(unit, precision));
 }
 
-function formatTexForUnit(value: string, unit: string) {
+function formatTexForUnit(
+  value: string,
+  unit: string,
+  precision?: DisplayPrecisionSpec
+) {
   const parsed = Number(value.replace(/,/g, ""));
   return Number.isFinite(parsed)
-    ? formatForUnit(parsed, unit).replace(/,/g, "{,}")
+    ? formatForUnit(parsed, unit, undefined, precision).replace(/,/g, "{,}")
     : value;
 }
 
@@ -153,19 +159,10 @@ const BUILDING_CODE_OPTIONS: BuildingCode[] = [
   "NBCC-2025",
 ];
 
-const LOAD_STANDARD_OPTIONS: Array<{ value: LoadStandard; label: string }> = [
-  { value: "ASCE 7-16", label: "ASCE 7-16" },
-  { value: "ASCE 7-22", label: "ASCE 7-22" },
-  { value: "none", label: "Not used" },
-];
-
-const CONCRETE_STANDARD_OPTIONS: ConcreteStandard[] = [
-  "ACI 318-14",
-  "ACI 318-19",
-  "CSA A23.3-14",
-  "CSA A23.3-19",
-  "CSA A23.3-24",
-];
+type MathTextPattern = {
+  pattern: RegExp;
+  tex: (match: RegExpMatchArray, precision: DisplayPrecisionSpec) => string;
+};
 
 const CODE_REFERENCES: Record<
   BuildingCode,
@@ -193,10 +190,7 @@ const CODE_REFERENCES: Record<
   },
 };
 
-const MATH_TEXT_PATTERNS: Array<{
-  pattern: RegExp;
-  tex: (match: RegExpMatchArray) => string;
-}> = [
+const MATH_TEXT_PATTERNS: MathTextPattern[] = [
   {
     pattern: /q = P\/A \+\/- Mx\/Sx \+\/- Mz\/Sz/,
     tex: () => "q = \\frac{P}{A} \\pm \\frac{M_x}{S_x} \\pm \\frac{M_z}{S_z}",
@@ -271,68 +265,107 @@ const MATH_TEXT_PATTERNS: Array<{
   },
   {
     pattern: /N = ([0-9.,-]+) kN/,
-    tex: (match) => `N = ${formatTexForUnit(match[1], "kN")}\\,\\mathrm{kN}`,
+    tex: (match, precision) =>
+      `N = ${formatTexForUnit(match[1], "kN", precision)}\\,\\mathrm{kN}`,
   },
   {
     pattern: /Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m/,
-    tex: (match) =>
+    tex: (match, precision) =>
       `M_x = ${formatTexForUnit(
         match[1],
-        "kN-m"
+        "kN-m",
+        precision
       )}\\,\\mathrm{kN\\cdot m},\\ M_z = ${formatTexForUnit(
         match[2],
-        "kN-m"
+        "kN-m",
+        precision
       )}\\,\\mathrm{kN\\cdot m}`,
   },
   {
     pattern: /qmin = ([0-9.,-]+) kPa/,
-    tex: (match) => `q_{min} = ${match[1]}\\,\\mathrm{kPa}`,
+    tex: (match, precision) =>
+      `q_{min} = ${formatTexForUnit(match[1], "kPa", precision)}\\,\\mathrm{kPa}`,
+  },
+  {
+    pattern: /qmin >= 0 (kPa|ksf)/,
+    tex: (match) => `q_{min} \\ge 0\\,\\mathrm{${match[1]}}`,
   },
   {
     pattern: /FS = ([0-9.,-]+|infinite)/,
     tex: (match) => `FS = ${match[1] === "infinite" ? "\\infty" : match[1]}`,
   },
   {
+    pattern: /Le = ([0-9.,-]+) m from \(Ec h\^3 \/ 3ks\)\^0\.25\./,
+    tex: (match, precision) =>
+      `L_e = ${formatTexForUnit(match[1], "m", precision)}\\,\\mathrm{m}\\;\\text{from}\\;\\left(\\frac{E_c h^3}{3k_s}\\right)^{1/4}`,
+  },
+  {
+    pattern: /Leff\/Le <= 1\.75/,
+    tex: () => "\\frac{L_{eff}}{L_e} \\le 1.75",
+  },
+  {
+    pattern: /Leff = 4a/,
+    tex: () => "L_{eff} = 4a",
+  },
+  {
+    pattern: /a_x = ([0-9.,-]+) m, a_z = ([0-9.,-]+) m; a_max = ([0-9.,-]+) m/,
+    tex: (match, precision) =>
+      `a_x = ${formatTexForUnit(match[1], "m", precision)}\\,\\mathrm{m},\\ a_z = ${formatTexForUnit(match[2], "m", precision)}\\,\\mathrm{m};\\ a_{max} = ${formatTexForUnit(match[3], "m", precision)}\\,\\mathrm{m}`,
+  },
+  {
+    pattern:
+      /Governing Leff\/Le = ([0-9.,-]+) vs 1\.75; minimum Le for current projection = ([0-9.,-]+) m\./,
+    tex: (match, precision) =>
+      `\\max\\left(\\frac{L_{eff}}{L_e}\\right) = ${match[1]}\\ \\text{vs}\\ 1.75;\\ L_{e,min} = ${formatTexForUnit(match[2], "m", precision)}\\,\\mathrm{m}`,
+  },
+  {
     pattern: /dX = ([0-9.,-]+) mm, dZ = ([0-9.,-]+) mm/,
-    tex: (match) =>
-      `d_x = ${formatTexForUnit(match[1], "mm")}\\,\\mathrm{mm},\\ d_z = ${formatTexForUnit(
+    tex: (match, precision) =>
+      `d_x = ${formatTexForUnit(match[1], "mm", precision)}\\,\\mathrm{mm},\\ d_z = ${formatTexForUnit(
         match[2],
-        "mm"
+        "mm",
+        precision
       )}\\,\\mathrm{mm}`,
   },
   {
     pattern: /Provided AsX = ([0-9.,-]+) mm2\/m/,
-    tex: (match) => `A_{s,x} = ${formatTexForUnit(match[1], "mm2/m")}\\,\\mathrm{mm^2/m}`,
+    tex: (match, precision) =>
+      `A_{s,x} = ${formatTexForUnit(match[1], "mm2/m", precision)}\\,\\mathrm{mm^2/m}`,
   },
   {
     pattern: /Provided AsZ = ([0-9.,-]+) mm2\/m/,
-    tex: (match) => `A_{s,z} = ${formatTexForUnit(match[1], "mm2/m")}\\,\\mathrm{mm^2/m}`,
+    tex: (match, precision) =>
+      `A_{s,z} = ${formatTexForUnit(match[1], "mm2/m", precision)}\\,\\mathrm{mm^2/m}`,
   },
   {
     pattern: /Required As = ([0-9.,-]+) mm2\/m; provided As = ([0-9.,-]+) mm2\/m/,
-    tex: (match) =>
+    tex: (match, precision) =>
       `A_{s,req} = ${formatTexForUnit(
         match[1],
-        "mm2/m"
+        "mm2/m",
+        precision
       )}\\,\\mathrm{mm^2/m};\\ A_s = ${formatTexForUnit(
         match[2],
-        "mm2/m"
+        "mm2/m",
+        precision
       )}\\,\\mathrm{mm^2/m}`,
   },
   {
     pattern: /c = ([0-9.,-]+) mm, limit = ([0-9.,-]+) mm/,
-    tex: (match) =>
-      `c = ${formatTexForUnit(match[1], "mm")}\\,\\mathrm{mm},\\ c_{limit} = ${formatTexForUnit(
+    tex: (match, precision) =>
+      `c = ${formatTexForUnit(match[1], "mm", precision)}\\,\\mathrm{mm},\\ c_{limit} = ${formatTexForUnit(
         match[2],
-        "mm"
+        "mm",
+        precision
       )}\\,\\mathrm{mm}`,
   },
   {
     pattern: /bo = ([0-9.,-]+) mm, d = ([0-9.,-]+) mm/,
-    tex: (match) =>
-      `b_o = ${formatTexForUnit(match[1], "mm")}\\,\\mathrm{mm},\\ d = ${formatTexForUnit(
+    tex: (match, precision) =>
+      `b_o = ${formatTexForUnit(match[1], "mm", precision)}\\,\\mathrm{mm},\\ d = ${formatTexForUnit(
         match[2],
-        "mm"
+        "mm",
+        precision
       )}\\,\\mathrm{mm}`,
   },
   {
@@ -349,10 +382,18 @@ interface MaterialInputs {
   rebarYield: number;
   concreteUnitWeight: number;
   soilUnitWeight: number;
+  saturatedSoilUnitWeight: number;
+  waterUnitWeight: number;
   clearCover: number;
   allowableBearing: number;
+  ultimateBearing: number;
   subgradeReactionModulus: number;
   soilFrictionCoefficient: number;
+  slidingSafetyFactor: number;
+  overturningSafetyFactor: number;
+  allowableSettlement: number;
+  allowableRotationX: number;
+  allowableRotationZ: number;
 }
 
 interface LoadCase {
@@ -387,7 +428,9 @@ const DEFAULT_GEOMETRY_SI: FootingGeometry = {
   footingLength: 2.4,
   footingWidth: 2.4,
   footingThickness: 0.6,
-  soilCoverDepth: 0,
+  soilCoverDepth: 1.2,
+  frostDepth: 1.2,
+  groundwaterDepth: 3,
   pedestalLength: 0.6,
   pedestalWidth: 0.6,
   pedestalHeight: 2,
@@ -401,10 +444,18 @@ const DEFAULT_MATERIALS_SI: MaterialInputs = {
   rebarYield: 420,
   concreteUnitWeight: 24,
   soilUnitWeight: 18,
+  saturatedSoilUnitWeight: 20,
+  waterUnitWeight: 9.81,
   clearCover: 75,
   allowableBearing: 200,
+  ultimateBearing: 400,
   subgradeReactionModulus: 45000,
   soilFrictionCoefficient: 0.45,
+  slidingSafetyFactor: 1.5,
+  overturningSafetyFactor: 1.5,
+  allowableSettlement: 25,
+  allowableRotationX: 0.003,
+  allowableRotationZ: 0.003,
 };
 
 const DEFAULT_REINFORCEMENT_SI: ReinforcementInputs = {
@@ -617,6 +668,8 @@ function convertGeometry(
     footingWidth: roundLength(geometry.footingWidth * factor),
     footingThickness: roundLength(geometry.footingThickness * factor),
     soilCoverDepth: roundLength(geometry.soilCoverDepth * factor),
+    frostDepth: roundLength(geometry.frostDepth * factor),
+    groundwaterDepth: roundLength(geometry.groundwaterDepth * factor),
     pedestalLength: roundLength(geometry.pedestalLength * factor),
     pedestalWidth: roundLength(geometry.pedestalWidth * factor),
     pedestalHeight: roundLength(geometry.pedestalHeight * factor),
@@ -649,17 +702,34 @@ function convertMaterials(
     soilUnitWeight: roundMaterial(
       materials.soilUnitWeight * (toUsc ? KN_M3_TO_PCF : 1 / KN_M3_TO_PCF)
     ),
+    saturatedSoilUnitWeight: roundMaterial(
+      materials.saturatedSoilUnitWeight *
+        (toUsc ? KN_M3_TO_PCF : 1 / KN_M3_TO_PCF)
+    ),
+    waterUnitWeight: roundMaterial(
+      materials.waterUnitWeight * (toUsc ? KN_M3_TO_PCF : 1 / KN_M3_TO_PCF)
+    ),
     clearCover: roundMaterial(
       materials.clearCover * (toUsc ? MM_TO_IN : 1 / MM_TO_IN)
     ),
     allowableBearing: roundMaterial(
       materials.allowableBearing * (toUsc ? KPA_TO_KSF : 1 / KPA_TO_KSF)
     ),
+    ultimateBearing: roundMaterial(
+      materials.ultimateBearing * (toUsc ? KPA_TO_KSF : 1 / KPA_TO_KSF)
+    ),
     subgradeReactionModulus: roundMaterial(
       materials.subgradeReactionModulus *
         (toUsc ? 1 / PCI_TO_KN_M3 : PCI_TO_KN_M3)
     ),
     soilFrictionCoefficient: materials.soilFrictionCoefficient,
+    slidingSafetyFactor: materials.slidingSafetyFactor,
+    overturningSafetyFactor: materials.overturningSafetyFactor,
+    allowableSettlement: roundMaterial(
+      materials.allowableSettlement * (toUsc ? MM_TO_IN : 1 / MM_TO_IN)
+    ),
+    allowableRotationX: materials.allowableRotationX,
+    allowableRotationZ: materials.allowableRotationZ,
   };
 }
 
@@ -816,46 +886,6 @@ function InlineMath({ tex }: { tex: string }) {
   );
 }
 
-function texNumber(value: number, digits = 3) {
-  return fmt(value, digits).replace(/,/g, "{,}");
-}
-
-function texNumberForUnit(value: number, unit: string) {
-  return formatForUnit(value, unit).replace(/,/g, "{,}");
-}
-
-function unitTex(unit: string) {
-  if (!unit) return "";
-  const units: Record<string, string> = {
-    ft: "\\mathrm{ft}",
-    "ft³": "\\mathrm{ft^3}",
-    in: "\\mathrm{in}",
-    "in²/ft": "\\mathrm{in^2/ft}",
-    kip: "\\mathrm{kip}",
-    "kip/ft": "\\mathrm{kip/ft}",
-    "kip·ft": "\\mathrm{kip\\cdot ft}",
-    "kip·ft/ft": "\\mathrm{kip\\cdot ft/ft}",
-    kPa: "\\mathrm{kPa}",
-    ksf: "\\mathrm{ksf}",
-    kN: "\\mathrm{kN}",
-    "kN/m": "\\mathrm{kN/m}",
-    "kN/m³": "\\mathrm{kN/m^3}",
-    "(kN/m)/m²": "\\mathrm{(kN/m)/m^2}",
-    "kN·m": "\\mathrm{kN\\cdot m}",
-    "kN·m/m": "\\mathrm{kN\\cdot m/m}",
-    ksi: "\\mathrm{ksi}",
-    m: "\\mathrm{m}",
-    "m³": "\\mathrm{m^3}",
-    mm: "\\mathrm{mm}",
-    "mm²/m": "\\mathrm{mm^2/m}",
-    "mm2/m": "\\mathrm{mm^2/m}",
-    MPa: "\\mathrm{MPa}",
-    pcf: "\\mathrm{pcf}",
-    pci: "\\mathrm{pci}",
-  };
-  return units[unit] ?? `\\mathrm{${unit.replace(/\s+/g, "\\ ")}}`;
-}
-
 function MathUnit({ unit }: { unit: string }) {
   return <span>{unit}</span>;
 }
@@ -875,6 +905,7 @@ function RebarSelect({
   onChange: (value: number) => void;
   tooltip?: React.ReactNode;
 }) {
+  const displayPrecision = useDisplayPrecision();
   const options = rebarOptions(units);
   const selected = nearestRebarDiameter(value, units);
   const unit = units === "SI" ? "mm" : "in";
@@ -914,15 +945,15 @@ function RebarSelect({
             {() => {
               const option = options.find((item) => item.diameter === selected);
               return option
-                ? `${option.label} (${formatForUnit(option.diameter, unit)} ${unit})`
-                : `${formatForUnit(selected, unit)} ${unit}`;
+                ? `${option.label} (${formatForUnit(option.diameter, unit, undefined, displayPrecision)} ${unit})`
+                : `${formatForUnit(selected, unit, undefined, displayPrecision)} ${unit}`;
             }}
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
           {options.map((option) => (
             <SelectItem key={option.label} value={String(option.diameter)}>
-              {option.label} ({formatForUnit(option.diameter, unit)} {unit})
+              {option.label} ({formatForUnit(option.diameter, unit, undefined, displayPrecision)} {unit})
             </SelectItem>
           ))}
         </SelectContent>
@@ -940,11 +971,12 @@ function MathValue({
   unit?: string;
   digits?: number;
 }) {
+  const displayPrecision = useDisplayPrecision();
   if (value === null) return <>N/A</>;
   if (!Number.isFinite(value)) return <InlineMath tex="\\infty" />;
   return (
     <>
-      {formatForUnit(value, unit, digits)}
+      {formatForUnit(value, unit, digits, displayPrecision)}
       {unit ? ` ${unit}` : ""}
     </>
   );
@@ -961,9 +993,10 @@ function PlainEquationValue({
   unit: string;
   digits?: number;
 }) {
+  const displayPrecision = useDisplayPrecision();
   return (
     <>
-      <FormulaValue tex={symbol} /> = {formatForUnit(value, unit, digits)} {unit}
+      <FormulaValue tex={symbol} /> = {formatForUnit(value, unit, digits, displayPrecision)} {unit}
     </>
   );
 }
@@ -1010,6 +1043,7 @@ function loadColumnLabel(column: { key: LoadCaseColumn; label: string }) {
 }
 
 function MathText({ children }: { children: string }) {
+  const displayPrecision = useDisplayPrecision();
   const segments: Array<string | { tex: string }> = [];
   let cursor = 0;
 
@@ -1040,7 +1074,7 @@ function MathText({ children }: { children: string }) {
       segments.push(remaining.slice(0, nextMatch.index));
     }
 
-    segments.push({ tex: nextPattern.tex(nextMatch) });
+    segments.push({ tex: nextPattern.tex(nextMatch, displayPrecision) });
     cursor += nextMatch.index + nextMatch[0].length;
   }
 
@@ -1061,6 +1095,7 @@ function convertedValue(value: number, unit: CheckUnit, units: UnitSystem) {
   if (units === "SI") return value;
   if (unit === "kPa") return value * KPA_TO_KSF;
   if (unit === "kN") return value * KN_TO_KIP;
+  if (unit === "kN-m") return value * KN_M_TO_KIP_FT;
   if (unit === "kN/m") return value * KN_PER_M_TO_KIP_PER_FT;
   if (unit === "kN-m/m") return value * KN_M_PER_M_TO_KIP_FT_PER_FT;
   if (unit === "MPa") return value * MPA_TO_KSI;
@@ -1074,11 +1109,13 @@ function displayUnit(unit: CheckUnit, units: UnitSystem) {
   if (unit === "ratio") return "";
   if (units === "SI") {
     if (unit === "mm2/m") return "mm²/m";
+    if (unit === "kN-m") return "kN·m";
     if (unit === "kN-m/m") return "kN·m/m";
     return unit;
   }
   if (unit === "kPa") return "ksf";
   if (unit === "kN") return "kip";
+  if (unit === "kN-m") return "kip·ft";
   if (unit === "kN/m") return "kip/ft";
   if (unit === "kN-m/m") return "kip·ft/ft";
   if (unit === "MPa") return "ksi";
@@ -1202,6 +1239,10 @@ export default function Home() {
   const [concreteStandard, setConcreteStandard] =
     useState<ConcreteStandard>("ACI 318-14");
   const [loadTableOpen, setLoadTableOpen] = useState(false);
+  const [precisionOpen, setPrecisionOpen] = useState(false);
+  const [displayPrecision, setDisplayPrecision] = useState<DisplayPrecisionSpec>(
+    DEFAULT_DISPLAY_PRECISION
+  );
   const [loadCombinationType, setLoadCombinationType] =
     useState<LoadCombinationType>("service");
   const [soilTreatmentMode, setSoilTreatmentMode] =
@@ -1243,6 +1284,19 @@ export default function Home() {
     loadCombinationType === "service"
       ? setServiceLoadCases
       : setStrengthLoadCases;
+  const formatDisplay = (value: number, unit?: string, digits?: number) =>
+    formatForUnit(value, unit, digits, displayPrecision);
+  const texNumberDisplay = (value: number, unit: string) =>
+    formatForUnit(value, unit, undefined, displayPrecision).replace(/,/g, "{,}");
+  const updateDisplayPrecision = (
+    key: keyof DisplayPrecisionSpec,
+    value: number
+  ) => {
+    setDisplayPrecision((current) => ({
+      ...current,
+      [key]: clampDisplayDigits(value),
+    }));
+  };
 
   const lengthUnit = units === "SI" ? "m" : "ft";
   const strengthUnit = units === "SI" ? "MPa" : "ksi";
@@ -1252,6 +1306,15 @@ export default function Home() {
   const subgradeReactionUnit = units === "SI" ? "(kN/m)/m²" : "pci";
   const forceUnit = units === "SI" ? "kN" : "kip";
   const momentUnit = units === "SI" ? "kN·m" : "kip·ft";
+  const lengthDisplayDigits = displayDigitsForUnit(lengthUnit, displayPrecision);
+  const strengthDisplayDigits = displayDigitsForUnit(strengthUnit, displayPrecision);
+  const unitWeightDisplayDigits = displayDigitsForUnit(unitWeightUnit, displayPrecision);
+  const coverDisplayDigits = displayDigitsForUnit(coverUnit, displayPrecision);
+  const bearingDisplayDigits = displayDigitsForUnit(bearingUnit, displayPrecision);
+  const subgradeDisplayDigits = displayDigitsForUnit(
+    subgradeReactionUnit,
+    displayPrecision
+  );
   const pedestalOffsetX = finiteNumber(geometry.pedestalOffsetX);
   const pedestalOffsetZ = finiteNumber(geometry.pedestalOffsetZ);
   const pedestalOffsetLimitX = pedestalOffsetLimit(
@@ -1329,6 +1392,20 @@ export default function Home() {
     soilTreatmentMode,
     units,
   ]);
+  const rigidityLimit = 1.75;
+  const rigidityGoverningRatio =
+    designResults.rigidity.ratioX === null ||
+    designResults.rigidity.ratioZ === null
+      ? null
+      : Math.max(designResults.rigidity.ratioX, designResults.rigidity.ratioZ);
+  const rigidityMaxProjection =
+    designResults.rigidity.elasticLength === null
+      ? null
+      : (rigidityLimit * designResults.rigidity.elasticLength) / 4;
+  const rigidityRatioPercent =
+    rigidityGoverningRatio === null
+      ? 0
+      : Math.min(100, (rigidityGoverningRatio / rigidityLimit) * 100);
   const governingServiceBearing = designResults.serviceBearing.reduce<
     (typeof designResults.serviceBearing)[number] | null
   >(
@@ -1846,6 +1923,7 @@ export default function Home() {
       serviceLoadCases: siServiceLoads,
       strengthLoadCases: siStrengthLoads,
       results: designResults,
+      displayPrecision,
     });
 
     printWindow.document.open();
@@ -1861,6 +1939,7 @@ export default function Home() {
   };
 
   return (
+    <DisplayPrecisionContext.Provider value={displayPrecision}>
     <TooltipProvider delay={150}>
       <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
         <header className="border-b bg-white dark:bg-slate-900">
@@ -1902,13 +1981,24 @@ export default function Home() {
                 <Button
                   type="button"
                   variant="outline"
+                  onClick={() => setPrecisionOpen(true)}
+                >
+                  Precision
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
                   size="icon"
                   onClick={resetInputs}
                   aria-label="Reset all inputs to defaults"
                 >
                   <RotateCcw />
                 </Button>
-                <div className="flex items-center gap-1.5">
+                <div
+                  className="flex items-center gap-1.5"
+                  role="group"
+                  aria-label="Building code; load and concrete standards update automatically"
+                >
                   <span className="text-xs text-muted-foreground">Code</span>
                   <Select
                     value={buildingCode}
@@ -1927,80 +2017,11 @@ export default function Home() {
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs text-muted-foreground">Loads</span>
-                  <Select
-                    value={loadStandard}
-                    onValueChange={(value) => {
-                      const nextLoadStandard = value as LoadStandard;
-                      if (
-                        nextLoadStandard ===
-                        CODE_REFERENCES[buildingCode].loadStandard
-                      ) {
-                        setLoadStandard(nextLoadStandard);
-                      }
-                    }}
-                  >
-                    <SelectTrigger size="sm" aria-label="Load standard">
-                      <SelectValue>
-                        {(value) =>
-                          LOAD_STANDARD_OPTIONS.find(
-                            (option) => option.value === value
-                          )?.label
-                        }
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {LOAD_STANDARD_OPTIONS.map((option) => (
-                        <SelectItem
-                          key={option.value}
-                          value={option.value}
-                          disabled={
-                            option.value !==
-                            CODE_REFERENCES[buildingCode].loadStandard
-                          }
-                        >
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs text-muted-foreground">
-                    Concrete
+                  <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+                    {loadStandard === "none"
+                      ? concreteStandard
+                      : `${loadStandard} · ${concreteStandard}`}
                   </span>
-                  <Select
-                    value={concreteStandard}
-                    onValueChange={(value) => {
-                      const nextConcreteStandard = value as ConcreteStandard;
-                      if (
-                        nextConcreteStandard ===
-                        CODE_REFERENCES[buildingCode].concreteStandard
-                      ) {
-                        setConcreteStandard(nextConcreteStandard);
-                      }
-                    }}
-                  >
-                    <SelectTrigger size="sm" aria-label="Concrete code">
-                      <SelectValue>{(value) => value}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CONCRETE_STANDARD_OPTIONS.map((option) => (
-                        <SelectItem
-                          key={option}
-                          value={option}
-                          disabled={
-                            option !==
-                            CODE_REFERENCES[buildingCode].concreteStandard
-                          }
-                        >
-                          {option}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
                 </div>
                 <Select
                   value={units}
@@ -2299,6 +2320,81 @@ export default function Home() {
           </div>
         ) : null}
 
+        {precisionOpen ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"
+            role="presentation"
+            onClick={() => setPrecisionOpen(false)}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="precision-heading"
+              className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-lg border bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3 border-b px-5 py-4">
+                <div className="min-w-0">
+                  <h2 id="precision-heading" className="text-base font-semibold">
+                    Display precision
+                  </h2>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setPrecisionOpen(false)}
+                  aria-label="Close display precision"
+                >
+                  <X />
+                </Button>
+              </div>
+              <div className="overflow-auto px-5 py-4">
+                <div className="grid grid-cols-[minmax(0,1fr)_72px] gap-x-4 gap-y-2">
+                  {DISPLAY_PRECISION_ROWS.map((row) => (
+                    <label
+                      key={row.key}
+                      className="contents text-sm"
+                      htmlFor={`precision-${row.key}`}
+                    >
+                      <span className="self-center text-muted-foreground">
+                        {row.label} ({units === "USC" ? row.uscUnit : row.key})
+                      </span>
+                      <input
+                        id={`precision-${row.key}`}
+                        type="number"
+                        min={0}
+                        max={6}
+                        step={1}
+                        value={displayPrecision[row.key]}
+                        onChange={(event) =>
+                          updateDisplayPrecision(
+                            row.key,
+                            Number(event.target.value)
+                          )
+                        }
+                        className="h-9 rounded-md border bg-background px-2 text-right text-sm tabular-nums"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="flex justify-between gap-2 border-t px-5 py-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDisplayPrecision(DEFAULT_DISPLAY_PRECISION)}
+                >
+                  Reset
+                </Button>
+                <Button type="button" onClick={() => setPrecisionOpen(false)}>
+                  Done
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <main className="mx-auto grid max-w-7xl grid-cols-1 items-start gap-4 px-6 py-5 xl:grid-cols-[12rem_minmax(0,1fr)_22rem]">
           <aside className="hidden xl:sticky xl:top-4 xl:block">
             <TableOfContents />
@@ -2319,6 +2415,7 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.footingLength}
                   min={0.05}
+                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("footingLength", value)}
                   tooltip="Plan dimension of footing in model X direction."
                 />
@@ -2328,6 +2425,7 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.footingWidth}
                   min={0.05}
+                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("footingWidth", value)}
                   tooltip="Plan dimension of footing in model Z direction."
                 />
@@ -2337,6 +2435,7 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.footingThickness}
                   min={0.05}
+                  displayDigits={lengthDisplayDigits}
                   onChange={(value) =>
                     updateGeometry("footingThickness", value)
                   }
@@ -2344,12 +2443,33 @@ export default function Home() {
                 />
                 <NumField
                   id="soilCoverDepth"
-                  label="Soil cover depth"
+                  label="Footing top depth"
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.soilCoverDepth}
                   min={0}
+                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("soilCoverDepth", value)}
-                  tooltip="Vertical soil depth from footing top to finished grade. Soil over the pedestal footprint is excluded."
+                  tooltip="Depth from finished grade to the top of footing. Soil over the pedestal footprint is excluded from overburden."
+                />
+                <NumField
+                  id="frostDepth"
+                  label="Frost depth"
+                  unit={<MathUnit unit={lengthUnit} />}
+                  value={geometry.frostDepth}
+                  min={0}
+                  displayDigits={lengthDisplayDigits}
+                  onChange={(value) => updateGeometry("frostDepth", value)}
+                  tooltip="Local frost depth used for the footing bottom depth check."
+                />
+                <NumField
+                  id="groundwaterDepth"
+                  label="Groundwater depth"
+                  unit={<MathUnit unit={lengthUnit} />}
+                  value={geometry.groundwaterDepth}
+                  min={0}
+                  displayDigits={lengthDisplayDigits}
+                  onChange={(value) => updateGeometry("groundwaterDepth", value)}
+                  tooltip="Depth from finished grade to groundwater. Concrete and soil weights below this depth use buoyant unit weights."
                 />
                 <NumField
                   id="pedestalLength"
@@ -2357,6 +2477,7 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.pedestalLength}
                   min={0.05}
+                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("pedestalLength", value)}
                   tooltip="Pedestal dimension parallel to footing length."
                 />
@@ -2366,6 +2487,7 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.pedestalWidth}
                   min={0.05}
+                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("pedestalWidth", value)}
                   tooltip="Pedestal dimension parallel to footing width."
                 />
@@ -2375,6 +2497,7 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.pedestalHeight}
                   min={0.05}
+                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("pedestalHeight", value)}
                   tooltip="Height from footing top to load application. Pedestal design is outside this footing-only scope."
                 />
@@ -2385,6 +2508,7 @@ export default function Home() {
                   value={pedestalOffsetX}
                   min={-pedestalOffsetLimitX}
                   max={pedestalOffsetLimitX}
+                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("pedestalOffsetX", value)}
                   tooltip="Offset from footing center. Positive X follows the red plan axis."
                 />
@@ -2395,6 +2519,7 @@ export default function Home() {
                   value={pedestalOffsetZ}
                   min={-pedestalOffsetLimitZ}
                   max={pedestalOffsetLimitZ}
+                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("pedestalOffsetZ", value)}
                   tooltip="Offset from footing center. Positive Z follows the blue plan axis."
                 />
@@ -2415,6 +2540,7 @@ export default function Home() {
                   unit={<MathUnit unit={strengthUnit} />}
                   value={materials.concreteStrength}
                   min={0}
+                  displayDigits={strengthDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("concreteStrength", value)
                   }
@@ -2434,6 +2560,7 @@ export default function Home() {
                     unit={<MathUnit unit={strengthUnit} />}
                     value={materials.concreteElasticModulus}
                     min={0}
+                    displayDigits={strengthDisplayDigits}
                     onChange={(value) =>
                       updateMaterials("concreteElasticModulus", value)
                     }
@@ -2441,7 +2568,7 @@ export default function Home() {
                       <div className="space-y-1">
                         <div>
                           Elastic modulus <FormulaValue tex="E_c" /> used only
-                          for the ACI 336 rigidity advisory.
+                          for the adapted ACI 336.2R isolated-footing rigidity advisory.
                         </div>
                         <div className="whitespace-nowrap">
                           SI: <FormulaValue tex={`E_c = 4700\\sqrt{f'_c}`} /> MPa.
@@ -2473,6 +2600,7 @@ export default function Home() {
                   unit={<MathUnit unit={strengthUnit} />}
                   value={materials.rebarYield}
                   min={0}
+                  displayDigits={strengthDisplayDigits}
                   onChange={(value) => updateMaterials("rebarYield", value)}
                   tooltip="Specified yield strength for footing reinforcement."
                 />
@@ -2482,6 +2610,7 @@ export default function Home() {
                   unit={<MathUnit unit={unitWeightUnit} />}
                   value={materials.concreteUnitWeight}
                   min={0}
+                  displayDigits={unitWeightDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("concreteUnitWeight", value)
                   }
@@ -2493,8 +2622,31 @@ export default function Home() {
                   unit={<MathUnit unit={unitWeightUnit} />}
                   value={materials.soilUnitWeight}
                   min={0}
+                  displayDigits={unitWeightDisplayDigits}
                   onChange={(value) => updateMaterials("soilUnitWeight", value)}
                   tooltip="Soil unit weight used for overburden above the footing outside the pedestal footprint."
+                />
+                <NumField
+                  id="saturatedSoilUnitWeight"
+                  label="Saturated soil unit weight"
+                  unit={<MathUnit unit={unitWeightUnit} />}
+                  value={materials.saturatedSoilUnitWeight}
+                  min={0}
+                  displayDigits={unitWeightDisplayDigits}
+                  onChange={(value) =>
+                    updateMaterials("saturatedSoilUnitWeight", value)
+                  }
+                  tooltip="Saturated soil unit weight below the groundwater table."
+                />
+                <NumField
+                  id="waterUnitWeight"
+                  label="Water unit weight"
+                  unit={<MathUnit unit={unitWeightUnit} />}
+                  value={materials.waterUnitWeight}
+                  min={0}
+                  displayDigits={unitWeightDisplayDigits}
+                  onChange={(value) => updateMaterials("waterUnitWeight", value)}
+                  tooltip="Water unit weight subtracted from saturated weights below groundwater."
                 />
                 <NumField
                   id="clearCover"
@@ -2502,6 +2654,7 @@ export default function Home() {
                   unit={<MathUnit unit={coverUnit} />}
                   value={materials.clearCover}
                   min={0}
+                  displayDigits={coverDisplayDigits}
                   onChange={(value) => updateMaterials("clearCover", value)}
                   tooltip="Clear cover to footing reinforcement."
                 />
@@ -2511,10 +2664,23 @@ export default function Home() {
                   unit={<MathUnit unit={bearingUnit} />}
                   value={materials.allowableBearing}
                   min={0}
+                  displayDigits={bearingDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("allowableBearing", value)
                   }
                   tooltip="Service-level allowable soil bearing pressure for footing checks."
+                />
+                <NumField
+                  id="ultimateBearing"
+                  label="Ultimate bearing"
+                  unit={<MathUnit unit={bearingUnit} />}
+                  value={materials.ultimateBearing}
+                  min={0}
+                  displayDigits={bearingDisplayDigits}
+                  onChange={(value) =>
+                    updateMaterials("ultimateBearing", value)
+                  }
+                  tooltip="Strength-level ultimate soil bearing pressure for factored bearing checks."
                 />
                 <NumField
                   id="subgradeReactionModulus"
@@ -2523,11 +2689,23 @@ export default function Home() {
                   value={materials.subgradeReactionModulus}
                   min={0}
                   step={1}
-                  displayDigits={0}
+                  displayDigits={subgradeDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("subgradeReactionModulus", value)
                   }
-                  tooltip="Vertical modulus of subgrade reaction ks used for the ACI 336 rigidity advisory."
+                  tooltip={
+                    <div className="space-y-1">
+                      <div>
+                        Vertical modulus of subgrade reaction <FormulaValue tex="k_s" /> used
+                        for the adapted ACI 336.2R isolated-footing rigidity advisory.
+                      </div>
+                      <div>
+                        The advisory uses <FormulaValue tex="L_e=(E_c h^3/3k_s)^{1/4}" /> and
+                        compares <FormulaValue tex="L_{eff}=4a" /> to <FormulaValue tex="1.75L_e" />,
+                        where <FormulaValue tex="a" /> is the footing projection beyond the pedestal.
+                      </div>
+                    </div>
+                  }
                 />
                 <NumField
                   id="soilFrictionCoefficient"
@@ -2536,10 +2714,73 @@ export default function Home() {
                   min={0}
                   max={2}
                   step={0.01}
+                  displayDigits={2}
                   onChange={(value) =>
                     updateMaterials("soilFrictionCoefficient", value)
                   }
                   tooltip="Coefficient used for friction-only service sliding check. Passive resistance is not included."
+                />
+                <NumField
+                  id="slidingSafetyFactor"
+                  label="Sliding safety factor"
+                  value={materials.slidingSafetyFactor}
+                  min={0.01}
+                  step={0.01}
+                  displayDigits={2}
+                  onChange={(value) =>
+                    updateMaterials("slidingSafetyFactor", value)
+                  }
+                  tooltip="Required service sliding safety factor applied to horizontal load."
+                />
+                <NumField
+                  id="overturningSafetyFactor"
+                  label="Overturning safety factor"
+                  value={materials.overturningSafetyFactor}
+                  min={0.01}
+                  step={0.01}
+                  displayDigits={2}
+                  onChange={(value) =>
+                    updateMaterials("overturningSafetyFactor", value)
+                  }
+                  tooltip="Required service overturning safety factor applied to footing moments."
+                />
+                <NumField
+                  id="allowableSettlement"
+                  label="Allowable settlement"
+                  unit={<MathUnit unit={coverUnit} />}
+                  value={materials.allowableSettlement}
+                  min={0}
+                  displayDigits={coverDisplayDigits}
+                  onChange={(value) =>
+                    updateMaterials("allowableSettlement", value)
+                  }
+                  tooltip="Serviceability settlement limit for the rigid-footing Winkler check."
+                />
+                <NumField
+                  id="allowableRotationX"
+                  label="Allowable rotation X"
+                  unit={<MathUnit unit="rad" />}
+                  value={materials.allowableRotationX}
+                  min={0}
+                  step={0.0001}
+                  displayDigits={4}
+                  onChange={(value) =>
+                    updateMaterials("allowableRotationX", value)
+                  }
+                  tooltip="Serviceability rotation limit about the footing X axis."
+                />
+                <NumField
+                  id="allowableRotationZ"
+                  label="Allowable rotation Z"
+                  unit={<MathUnit unit="rad" />}
+                  value={materials.allowableRotationZ}
+                  min={0}
+                  step={0.0001}
+                  displayDigits={4}
+                  onChange={(value) =>
+                    updateMaterials("allowableRotationZ", value)
+                  }
+                  tooltip="Serviceability rotation limit about the footing Z axis."
                 />
               </CardContent>
             </Card>
@@ -2569,6 +2810,7 @@ export default function Home() {
                     unit={<MathUnit unit={coverUnit} />}
                     value={reinforcement.barSpacingX}
                     min={0.1}
+                    displayDigits={coverDisplayDigits}
                     onChange={(value) =>
                       updateReinforcement("barSpacingX", value)
                     }
@@ -2590,6 +2832,7 @@ export default function Home() {
                     unit={<MathUnit unit={coverUnit} />}
                     value={reinforcement.barSpacingZ}
                     min={0.1}
+                    displayDigits={coverDisplayDigits}
                     onChange={(value) =>
                       updateReinforcement("barSpacingZ", value)
                     }
@@ -2599,11 +2842,11 @@ export default function Home() {
                 <p className="text-xs text-muted-foreground">
                   Provided reinforcement: X ={" "}
                   <span className="font-medium text-foreground">
-                    {fmt(designResults.summary.providedAsX, 0)} mm²/m
+                    {formatDisplay(designResults.summary.providedAsX, "mm²/m")} mm²/m
                   </span>
                   ; Z ={" "}
                   <span className="font-medium text-foreground">
-                    {fmt(designResults.summary.providedAsZ, 0)} mm²/m
+                    {formatDisplay(designResults.summary.providedAsZ, "mm²/m")} mm²/m
                   </span>
                   .
                 </p>
@@ -2878,21 +3121,21 @@ export default function Home() {
 	                  </div>
 	                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
 	                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-	                      ACI 336 rigidity advice
+	                      Adapted ACI 336.2R rigidity advice
 	                      <Tooltip>
 	                        <TooltipTrigger
 	                          render={
 	                            <button
 	                              type="button"
 	                              className="text-muted-foreground hover:text-foreground"
-	                              aria-label="ACI 336 rigidity basis"
+	                              aria-label="Adapted ACI 336.2R rigidity basis"
 	                            >
 	                              <Info size={13} />
 	                            </button>
 	                          }
 	                        />
-	                        <TooltipContent className="max-w-sm text-xs">
-	                          <div className="w-80 max-w-sm space-y-1 text-left">
+	                        <TooltipContent className="max-w-xl text-sm">
+	                          <div className="w-[34rem] max-w-[calc(100vw-2rem)] space-y-2 text-left leading-relaxed [&_.katex]:text-[1.05em]">
 	                            <div>
 	                              <MathText>{designResults.rigidity.basis}</MathText>
 	                            </div>
@@ -2922,24 +3165,63 @@ export default function Home() {
 	                          : "Flexible"}
 	                      </Badge>
 	                    </div>
-	                    <div className="mt-1 text-xs text-muted-foreground">
-	                      {designResults.rigidity.elasticLength === null ? (
-	                        <span>Enter <FormulaValue tex="k_s" /> to classify.</span>
-	                      ) : (
-	                        <FormulaValue
-	                          tex={`L_e = ${texNumber(
-	                            units === "SI"
-	                              ? designResults.rigidity.elasticLength
-	                              : designResults.rigidity.elasticLength * M_TO_FT
-	                          )}\\,${unitTex(lengthUnit)}`}
-	                        />
-	                      )}
-	                    </div>
+		                    <div className="mt-2 text-xs text-muted-foreground">
+		                      {rigidityGoverningRatio === null ||
+		                      rigidityMaxProjection === null ||
+		                      designResults.rigidity.governingProjection === null ? (
+		                        <span>Enter <FormulaValue tex="k_s" /> to classify.</span>
+		                      ) : (
+		                        <div className="space-y-1.5">
+		                          <div className="flex items-baseline justify-between gap-3">
+		                            <span>
+		                              <FormulaValue tex="L_{eff}/L_e" />
+		                            </span>
+		                            <span className="font-medium text-foreground">
+		                              {formatDisplay(rigidityGoverningRatio, "ratio", 3)} / {formatDisplay(rigidityLimit, "ratio", 2)}
+		                            </span>
+		                          </div>
+		                          <div className="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+		                            <div
+		                              className={
+		                                designResults.rigidity.status === "rigid"
+		                                  ? "h-full rounded-full bg-blue-600"
+		                                  : "h-full rounded-full bg-red-600"
+		                              }
+		                              style={{ width: `${rigidityRatioPercent}%` }}
+		                            />
+		                          </div>
+		                          <div className="flex items-baseline justify-between gap-3">
+		                            <span>Projection <FormulaValue tex="a" /></span>
+		                            <span className="font-medium text-foreground">
+		                              {formatDisplay(
+		                                units === "SI"
+		                                  ? designResults.rigidity.governingProjection
+		                                  : designResults.rigidity.governingProjection * M_TO_FT,
+		                                lengthUnit
+		                              )}{" "}
+		                              /{" "}
+		                              {formatDisplay(
+		                                units === "SI"
+		                                  ? rigidityMaxProjection
+		                                  : rigidityMaxProjection * M_TO_FT,
+		                                lengthUnit
+		                              )}{" "}
+		                              {lengthUnit}
+		                            </span>
+		                          </div>
+		                          <div className="text-[11px]">
+		                            current max from pedestal face / max before flexible advisory
+		                          </div>
+		                        </div>
+		                      )}
+		                    </div>
 	                  </div>
 	                </div>
 
 	                <div className="space-y-2">
-                  {designResults.checks.map((item) => (
+                  {designResults.checks.map((item) => {
+                    const isUpliftCheck = item.id === "soil-contact";
+                    return (
                     <div
                       key={item.id}
                       className="relative rounded-md border bg-white p-3 dark:bg-slate-950"
@@ -2957,7 +3239,9 @@ export default function Home() {
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
                         <div>
-	                          <div className="text-muted-foreground">Demand</div>
+	                          <div className="text-muted-foreground">
+                              {isUpliftCheck ? "Minimum pressure" : "Demand"}
+                            </div>
 	                          <div className="font-medium">
 	                            <CheckValue
 	                              value={item.demand}
@@ -2967,13 +3251,24 @@ export default function Home() {
 	                          </div>
 	                        </div>
 	                        <div>
-	                          <div className="text-muted-foreground">Capacity</div>
+	                          <div className="text-muted-foreground">
+                              {isUpliftCheck ? "Criterion" : "Capacity"}
+                            </div>
 	                          <div className="font-medium">
-	                            <CheckValue
-	                              value={item.capacity}
-	                              unit={item.unit}
-	                              units={units}
-	                            />
+                              {isUpliftCheck ? (
+                                <span>
+                                  <MathText>{`qmin >= 0 ${displayUnit(
+                                    item.unit,
+                                    units
+                                  )}`}</MathText>
+                                </span>
+                              ) : (
+                                <CheckValue
+                                  value={item.capacity}
+                                  unit={item.unit}
+                                  units={units}
+                                />
+                              )}
 	                          </div>
 	                        </div>
                         <div>
@@ -3010,7 +3305,8 @@ export default function Home() {
                         </div>
                       ) : null}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div className="space-y-4">
@@ -3157,13 +3453,35 @@ export default function Home() {
                   <div className="text-xs">
                     {[
                       {
+                        k: "A-delta-allow",
+                        name: (
+                          <>
+                            <FormulaValue tex="s_{allow}" /> - allowable settlement
+                          </>
+                        ),
+                        value: formatDisplay(materials.allowableSettlement, coverUnit),
+                        unit: coverUnit,
+                        reference: null,
+                      },
+                      {
                         k: "A-qa",
                         name: (
                           <>
                             <FormulaValue tex="q_a" /> - allowable bearing
                           </>
                         ),
-                        value: formatForUnit(materials.allowableBearing, bearingUnit),
+                        value: formatDisplay(materials.allowableBearing, bearingUnit),
+                        unit: bearingUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "B-qu",
+                        name: (
+                          <>
+                            <FormulaValue tex="q_u" /> - ultimate bearing
+                          </>
+                        ),
+                        value: formatDisplay(materials.ultimateBearing, bearingUnit),
                         unit: bearingUnit,
                         reference: null,
                       },
@@ -3174,7 +3492,7 @@ export default function Home() {
                             <FormulaValue tex="c_c" /> - clear cover
                           </>
                         ),
-                        value: formatForUnit(materials.clearCover, coverUnit),
+                        value: formatDisplay(materials.clearCover, coverUnit),
                         unit: coverUnit,
                         reference: null,
                       },
@@ -3185,7 +3503,7 @@ export default function Home() {
                             <FormulaValue tex="E_c" /> - concrete modulus
                           </>
                         ),
-                        value: formatForUnit(materials.concreteElasticModulus, strengthUnit),
+                        value: formatDisplay(materials.concreteElasticModulus, strengthUnit),
                         unit: strengthUnit,
                         reference: null,
                       },
@@ -3196,7 +3514,7 @@ export default function Home() {
                             <FormulaValue tex="f'_c" /> - concrete strength
                           </>
                         ),
-                        value: formatForUnit(materials.concreteStrength, strengthUnit),
+                        value: formatDisplay(materials.concreteStrength, strengthUnit),
                         unit: strengthUnit,
                         reference: null,
                       },
@@ -3207,7 +3525,7 @@ export default function Home() {
                             <FormulaValue tex="f_y" /> - rebar yield
                           </>
                         ),
-                        value: formatForUnit(materials.rebarYield, strengthUnit),
+                        value: formatDisplay(materials.rebarYield, strengthUnit),
                         unit: strengthUnit,
                         reference: null,
                       },
@@ -3216,8 +3534,12 @@ export default function Home() {
                         name: <>Footing plan</>,
                         value: (
                           <FormulaValue
-                            tex={`${texNumber(geometry.footingLength)} \\times ${texNumber(
-                              geometry.footingWidth
+                            tex={`${texNumberDisplay(
+                              geometry.footingLength,
+                              lengthUnit
+                            )} \\times ${texNumberDisplay(
+                              geometry.footingWidth,
+                              lengthUnit
                             )}`}
                           />
                         ),
@@ -3231,18 +3553,40 @@ export default function Home() {
                             <FormulaValue tex={"\\gamma_c"} /> - concrete unit weight
                           </>
                         ),
-                        value: formatForUnit(materials.concreteUnitWeight, unitWeightUnit),
+                        value: formatDisplay(materials.concreteUnitWeight, unitWeightUnit),
                         unit: unitWeightUnit,
                         reference: null,
                       },
                       {
-                        k: "H-hs",
+                        k: "D-df",
                         name: (
                           <>
-                            <FormulaValue tex="h_s" /> - soil cover depth
+                            <FormulaValue tex="D_f" /> - frost depth
                           </>
                         ),
-                        value: formatForUnit(geometry.soilCoverDepth, lengthUnit),
+                        value: formatDisplay(geometry.frostDepth, lengthUnit),
+                        unit: lengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "D-dt",
+                        name: (
+                          <>
+                            <FormulaValue tex="D_t" /> - footing top depth
+                          </>
+                        ),
+                        value: formatDisplay(geometry.soilCoverDepth, lengthUnit),
+                        unit: lengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "D-dw",
+                        name: (
+                          <>
+                            <FormulaValue tex="D_w" /> - groundwater depth
+                          </>
+                        ),
+                        value: formatDisplay(geometry.groundwaterDepth, lengthUnit),
                         unit: lengthUnit,
                         reference: null,
                       },
@@ -3253,7 +3597,7 @@ export default function Home() {
                             <FormulaValue tex="k_s" /> - subgrade reaction modulus
                           </>
                         ),
-                        value: formatForUnit(materials.subgradeReactionModulus, subgradeReactionUnit),
+                        value: formatDisplay(materials.subgradeReactionModulus, subgradeReactionUnit),
                         unit: subgradeReactionUnit,
                         reference: null,
                       },
@@ -3265,6 +3609,28 @@ export default function Home() {
                         reference: null,
                       },
                       {
+                        k: "M-FS-ot",
+                        name: (
+                          <>
+                            <FormulaValue tex="FS_{OT}" /> - overturning safety factor
+                          </>
+                        ),
+                        value: fmt(materials.overturningSafetyFactor, 2),
+                        unit: "",
+                        reference: null,
+                      },
+                      {
+                        k: "M-FS-sliding",
+                        name: (
+                          <>
+                            <FormulaValue tex="FS_{sliding}" /> - sliding safety factor
+                          </>
+                        ),
+                        value: fmt(materials.slidingSafetyFactor, 2),
+                        unit: "",
+                        reference: null,
+                      },
+                      {
                         k: "M-model-name",
                         name: <>Model name</>,
                         value: modelName || "Untitled",
@@ -3272,7 +3638,7 @@ export default function Home() {
                         reference: null,
                       },
                       {
-                        k: "M-mu",
+                        k: "zz-mu",
                         name: (
                           <>
                             <FormulaValue tex={"\\mu"} /> - friction coefficient
@@ -3280,6 +3646,28 @@ export default function Home() {
                         ),
                         value: fmt(materials.soilFrictionCoefficient, 2),
                         unit: "",
+                        reference: null,
+                      },
+                      {
+                        k: "zz-theta-x",
+                        name: (
+                          <>
+                            <FormulaValue tex="\\theta_{x,allow}" /> - allowable rotation X
+                          </>
+                        ),
+                        value: fmt(materials.allowableRotationX, 4),
+                        unit: "rad",
+                        reference: null,
+                      },
+                      {
+                        k: "zz-theta-z",
+                        name: (
+                          <>
+                            <FormulaValue tex="\\theta_{z,allow}" /> - allowable rotation Z
+                          </>
+                        ),
+                        value: fmt(materials.allowableRotationZ, 4),
+                        unit: "rad",
                         reference: null,
                       },
                       {
@@ -3296,7 +3684,29 @@ export default function Home() {
                             <FormulaValue tex={"\\gamma_s"} /> - soil unit weight
                           </>
                         ),
-                        value: formatForUnit(materials.soilUnitWeight, unitWeightUnit),
+                        value: formatDisplay(materials.soilUnitWeight, unitWeightUnit),
+                        unit: unitWeightUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "zz-gamma-sat",
+                        name: (
+                          <>
+                            <FormulaValue tex={"\\gamma_{sat}"} /> - saturated soil unit weight
+                          </>
+                        ),
+                        value: formatDisplay(materials.saturatedSoilUnitWeight, unitWeightUnit),
+                        unit: unitWeightUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "zz-gamma-w",
+                        name: (
+                          <>
+                            <FormulaValue tex={"\\gamma_w"} /> - water unit weight
+                          </>
+                        ),
+                        value: formatDisplay(materials.waterUnitWeight, unitWeightUnit),
                         unit: unitWeightUnit,
                         reference: null,
                       },
@@ -3305,8 +3715,12 @@ export default function Home() {
                         name: <>Pedestal footprint</>,
                         value: (
                           <FormulaValue
-                            tex={`${texNumber(geometry.pedestalLength)} \\times ${texNumber(
-                              geometry.pedestalWidth
+                            tex={`${texNumberDisplay(
+                              geometry.pedestalLength,
+                              lengthUnit
+                            )} \\times ${texNumberDisplay(
+                              geometry.pedestalWidth,
+                              lengthUnit
                             )}`}
                           />
                         ),
@@ -3318,7 +3732,13 @@ export default function Home() {
                         name: <>Pedestal offset</>,
                         value: (
                           <FormulaValue
-                            tex={`x=${texNumber(pedestalOffsetX)},\\ z=${texNumber(pedestalOffsetZ)}`}
+                            tex={`x=${texNumberDisplay(
+                              pedestalOffsetX,
+                              lengthUnit
+                            )},\\ z=${texNumberDisplay(
+                              pedestalOffsetZ,
+                              lengthUnit
+                            )}`}
                           />
                         ),
                         unit: lengthUnit,
@@ -3331,7 +3751,7 @@ export default function Home() {
                             <FormulaValue tex="h" /> - footing thickness
                           </>
                         ),
-                        value: formatForUnit(geometry.footingThickness, lengthUnit),
+                        value: formatDisplay(geometry.footingThickness, lengthUnit),
                         unit: lengthUnit,
                         reference: null,
                       },
@@ -3340,10 +3760,10 @@ export default function Home() {
                         name: <>X reinforcement</>,
                         value: (
                           <FormulaValue
-                            tex={`${texNumberForUnit(
+                            tex={`${texNumberDisplay(
                               reinforcement.barDiameterX,
                               coverUnit
-                            )}@${texNumberForUnit(reinforcement.barSpacingX, coverUnit)}`}
+                            )}@${texNumberDisplay(reinforcement.barSpacingX, coverUnit)}`}
                           />
                         ),
                         unit: coverUnit,
@@ -3354,10 +3774,10 @@ export default function Home() {
                         name: <>Z reinforcement</>,
                         value: (
                           <FormulaValue
-                            tex={`${texNumberForUnit(
+                            tex={`${texNumberDisplay(
                               reinforcement.barDiameterZ,
                               coverUnit
-                            )}@${texNumberForUnit(reinforcement.barSpacingZ, coverUnit)}`}
+                            )}@${texNumberDisplay(reinforcement.barSpacingZ, coverUnit)}`}
                           />
                         ),
                         unit: coverUnit,
@@ -3390,7 +3810,7 @@ export default function Home() {
                             <FormulaValue tex="A_{s,min,x}" /> - minimum X steel
                           </>
                         ),
-                        value: formatForUnit(
+                        value: formatDisplay(
                           convertedValue(designResults.summary.minimumAsX, "mm2/m", units),
                           units === "SI" ? "mm²/m" : "in²/ft"
                         ),
@@ -3404,7 +3824,7 @@ export default function Home() {
                             <FormulaValue tex="A_{s,min,z}" /> - minimum Z steel
                           </>
                         ),
-                        value: formatForUnit(
+                        value: formatDisplay(
                           convertedValue(designResults.summary.minimumAsZ, "mm2/m", units),
                           units === "SI" ? "mm²/m" : "in²/ft"
                         ),
@@ -3418,7 +3838,7 @@ export default function Home() {
                             <FormulaValue tex="A_{s,x}" /> - provided X steel
                           </>
                         ),
-                        value: formatForUnit(
+                        value: formatDisplay(
                           convertedValue(designResults.summary.providedAsX, "mm2/m", units),
                           units === "SI" ? "mm²/m" : "in²/ft"
                         ),
@@ -3432,7 +3852,7 @@ export default function Home() {
                             <FormulaValue tex="A_{s,z}" /> - provided Z steel
                           </>
                         ),
-                        value: formatForUnit(
+                        value: formatDisplay(
                           convertedValue(designResults.summary.providedAsZ, "mm2/m", units),
                           units === "SI" ? "mm²/m" : "in²/ft"
                         ),
@@ -3446,7 +3866,7 @@ export default function Home() {
                             <FormulaValue tex="d_x" /> - effective depth X
                           </>
                         ),
-                        value: formatForUnit(
+                        value: formatDisplay(
                           convertedValue(designResults.summary.effectiveDepthX, "mm", units),
                           coverUnit
                         ),
@@ -3460,7 +3880,7 @@ export default function Home() {
                             <FormulaValue tex="d_z" /> - effective depth Z
                           </>
                         ),
-                        value: formatForUnit(
+                        value: formatDisplay(
                           convertedValue(designResults.summary.effectiveDepthZ, "mm", units),
                           coverUnit
                         ),
@@ -3474,7 +3894,7 @@ export default function Home() {
                             <FormulaValue tex="P_{max}" /> - max compression
                           </>
                         ),
-                        value: formatForUnit(maxCompression, forceUnit),
+                        value: formatDisplay(maxCompression, forceUnit),
                         unit: forceUnit,
                         reference: null,
                       },
@@ -3488,7 +3908,7 @@ export default function Home() {
                         value:
                           governingServiceBearing === null
                             ? "N/A"
-                            : formatForUnit(
+                            : formatDisplay(
                                 convertedValue(governingServiceBearing.maxBearing, "kPa", units),
                                 bearingUnit
                               ),
@@ -3511,7 +3931,7 @@ export default function Home() {
                             <FormulaValue tex="V_c" /> - concrete volume
                           </>
                         ),
-                        value: formatForUnit(concreteVolume, `${lengthUnit}³`),
+                        value: formatDisplay(concreteVolume, `${lengthUnit}³`),
                         unit: `${lengthUnit}³`,
                         reference: null,
                       },
@@ -3522,7 +3942,7 @@ export default function Home() {
                             <FormulaValue tex="W_f" /> - footing self weight
                           </>
                         ),
-                        value: formatForUnit(
+                        value: formatDisplay(
                           convertedValue(designResults.summary.footingSelfWeight, "kN", units),
                           forceUnit
                         ),
@@ -3536,7 +3956,7 @@ export default function Home() {
                             <FormulaValue tex="W_s" /> - soil overburden
                           </>
                         ),
-                        value: formatForUnit(
+                        value: formatDisplay(
                           convertedValue(designResults.summary.soilOverburdenWeight, "kN", units),
                           forceUnit
                         ),
@@ -3550,7 +3970,7 @@ export default function Home() {
                             <FormulaValue tex="W_{svc}" /> - applied service foundation weight
                           </>
                         ),
-                        value: formatForUnit(
+                        value: formatDisplay(
                           convertedValue(
                             designResults.summary.appliedServiceFoundationWeight,
                             "kN",
@@ -3609,5 +4029,6 @@ export default function Home() {
         </footer>
       </div>
     </TooltipProvider>
+    </DisplayPrecisionContext.Provider>
   );
 }
