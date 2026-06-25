@@ -382,6 +382,41 @@ const MATH_TEXT_PATTERNS: MathTextPattern[] = [
     tex: (match) =>
       `v_u = ${match[1]}\\,\\mathrm{MPa},\\ v_u(M_x) = ${match[2]}\\,\\mathrm{MPa},\\ v_u(M_z) = ${match[3]}\\,\\mathrm{MPa}`,
   },
+  {
+    pattern: /s_max = q_max \/ k_s/,
+    tex: () => "s_{max} = \\frac{q_{max}}{k_s}",
+  },
+  {
+    pattern: /qmax = ([0-9.,-]+) kPa/,
+    tex: (match, precision) =>
+      `q_{max} = ${formatTexForUnit(match[1], "kPa", precision)}\\,\\mathrm{kPa}`,
+  },
+  {
+    pattern: /theta_x = \|dq\/dz\| \/ k_s/,
+    tex: () => "\\theta_x = \\frac{\\lvert dq/dz \\rvert}{k_s}",
+  },
+  {
+    pattern: /theta_z = \|dq\/dx\| \/ k_s/,
+    tex: () => "\\theta_z = \\frac{\\lvert dq/dx \\rvert}{k_s}",
+  },
+  {
+    pattern: /dq\/dz = ([0-9.,-]+) kPa\/m/,
+    tex: (match, precision) =>
+      `\\frac{dq}{dz} = ${formatTexForUnit(match[1], "kPa", precision)}\\,\\mathrm{kPa/m}`,
+  },
+  {
+    pattern: /dq\/dx = ([0-9.,-]+) kPa\/m/,
+    tex: (match, precision) =>
+      `\\frac{dq}{dx} = ${formatTexForUnit(match[1], "kPa", precision)}\\,\\mathrm{kPa/m}`,
+  },
+  {
+    pattern: /([0-9.]+) \|Mx\| <= N B\/2/,
+    tex: (match) => `${match[1]}\\,\\lvert M_x \\rvert \\le \\frac{NB}{2}`,
+  },
+  {
+    pattern: /([0-9.]+) \|Mz\| <= N L\/2/,
+    tex: (match) => `${match[1]}\\,\\lvert M_z \\rvert \\le \\frac{NL}{2}`,
+  },
 ];
 
 export interface MaterialInputs {
@@ -479,9 +514,15 @@ const SOIL_TREATMENT_OPTIONS: Array<{
   value: SoilTreatmentMode;
   label: string;
 }> = [
-  { value: "ignored", label: "Ignored" },
-  { value: "service", label: "Service / stability" },
-  { value: "full", label: "Full" },
+  { value: "ignored", label: "Ignore" },
+  {
+    value: "service",
+    label: "Use for serviceability and stability checks",
+  },
+  {
+    value: "full",
+    label: "Use for serviceability, stability and strength checks",
+  },
 ];
 
 const METRIC_REBARS = [
@@ -1141,6 +1182,13 @@ function utilizationText(check: DesignCheck) {
   return fmt(check.utilization, 2);
 }
 
+const CONTACT_STATE_LABEL: Record<string, string> = {
+  full: "Full",
+  partial: "Partial",
+  zero: "Uplift",
+  failed: "Failed",
+};
+
 function parseNumericCell(value: string) {
   const parsed = Number(value.trim().replace(/,/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
@@ -1616,6 +1664,24 @@ export default function Home() {
       column >= columnStart &&
       column <= columnEnd
     );
+  };
+
+  const isSelectionCorner = (row: number, column: number) => {
+    if (!selectedCells) return false;
+    const { rowEnd, columnEnd } = normalizedSelection(selectedCells);
+    return row === rowEnd && column === columnEnd;
+  };
+
+  const selectionEdges = (row: number, column: number) => {
+    if (!selectedCells || !isCellSelected(row, column)) return null;
+    const { rowStart, rowEnd, columnStart, columnEnd } =
+      normalizedSelection(selectedCells);
+    return {
+      top: row === rowStart,
+      bottom: row === rowEnd,
+      left: column === columnStart,
+      right: column === columnEnd,
+    };
   };
 
   const clearSelectedCells = () => {
@@ -2258,6 +2324,28 @@ export default function Home() {
                                 editingCell,
                                 position
                               );
+                              const edges =
+                                selected && !editing
+                                  ? selectionEdges(rowIndex, columnIndex)
+                                  : null;
+                              const edgeShadow = edges
+                                ? [
+                                    edges.top
+                                      ? "inset 0 1px 0 0 var(--selection-edge)"
+                                      : null,
+                                    edges.bottom
+                                      ? "inset 0 -1px 0 0 var(--selection-edge)"
+                                      : null,
+                                    edges.left
+                                      ? "inset 1px 0 0 0 var(--selection-edge)"
+                                      : null,
+                                    edges.right
+                                      ? "inset -1px 0 0 0 var(--selection-edge)"
+                                      : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(", ")
+                                : undefined;
                               const value =
                                 isEmptyRow
                                   ? ""
@@ -2267,14 +2355,19 @@ export default function Home() {
                               return (
                                 <TableCell
                                   key={column.key}
+                                  style={
+                                    edgeShadow
+                                      ? {
+                                          boxShadow: edgeShadow,
+                                          ["--selection-edge" as string]:
+                                            "rgb(5 150 105)",
+                                        }
+                                      : undefined
+                                  }
                                   className={`relative h-9 border-r p-0 ${
                                     selected
                                       ? "bg-emerald-50 dark:bg-emerald-950/60"
                                       : "bg-white dark:bg-slate-900"
-                                  } ${
-                                    selected && !editing
-                                      ? "ring-1 ring-inset ring-emerald-600"
-                                      : ""
                                   }`}
                                   onMouseDown={(event) => {
                                     event.preventDefault();
@@ -2359,7 +2452,8 @@ export default function Home() {
                                       <span className="truncate">{value}</span>
                                     </div>
                                   )}
-                                  {selected && !editing ? (
+                                  {isSelectionCorner(rowIndex, columnIndex) &&
+                                  !editing ? (
                                     <span className="pointer-events-none absolute -bottom-1 -right-1 size-2 border border-white bg-emerald-700 dark:border-slate-900" />
                                   ) : null}
                                 </TableCell>
@@ -2730,7 +2824,7 @@ export default function Home() {
                 />
                 <NumField
                   id="clearCover"
-                  label="Clear cover"
+                  label="Concrete cover"
                   unit={<MathUnit unit={coverUnit} />}
                   value={materials.clearCover}
                   min={0}
@@ -2797,7 +2891,7 @@ export default function Home() {
                 />
                 <NumField
                   id="slidingSafetyFactor"
-                  label="Sliding safety factor"
+                  label="Minimum sliding safety factor"
                   value={materials.slidingSafetyFactor}
                   min={0.01}
                   step={0.01}
@@ -2808,7 +2902,7 @@ export default function Home() {
                 />
                 <NumField
                   id="overturningSafetyFactor"
-                  label="Overturning safety factor"
+                  label="Minimum overturning safety factor"
                   value={materials.overturningSafetyFactor}
                   min={0.01}
                   step={0.01}
@@ -2963,19 +3057,19 @@ export default function Home() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:min-w-80">
-                    <span className="text-muted-foreground">
-                      Service combos
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="inline-flex items-baseline gap-1.5 rounded-md bg-muted px-2.5 py-1">
+                      <span className="font-semibold tabular-nums">
+                        {activeLoadCases.length}
+                      </span>
+                      <span className="text-muted-foreground">service</span>
                     </span>
-                    <span className="text-right font-medium">
-                      {activeLoadCases.length}
-                    </span>
-                    <span className="text-muted-foreground">
-                      Strength combos
-                    </span>
-                    <span className="text-right font-medium">
-                      {activeStrengthLoadCases.length}
+                    <span className="inline-flex items-baseline gap-1.5 rounded-md bg-muted px-2.5 py-1">
+                      <span className="font-semibold tabular-nums">
+                        {activeStrengthLoadCases.length}
+                      </span>
+                      <span className="text-muted-foreground">strength</span>
                     </span>
                   </div>
                   <Button type="button" onClick={() => setLoadTableOpen(true)}>
@@ -3076,14 +3170,6 @@ export default function Home() {
 	                    />
 	                  </span>
                 </div>
-                <p className="text-xs text-muted-foreground">
-	                  Table columns are Load case, <FormulaValue tex="P" />,{" "}
-	                  <FormulaValue tex="H_x" />, <FormulaValue tex="H_z" />,{" "}
-	                  <FormulaValue tex="M_x" />, <FormulaValue tex="M_z" />, and{" "}
-	                  <FormulaValue tex="T" />. Values are at top of pedestal.
-	                  Selected code controls concrete
-                  factors; load combinations must match {loadStandard}.
-                </p>
               </CardContent>
             </Card>
 
@@ -3293,7 +3379,7 @@ export default function Home() {
 
 	                <div className="space-y-2">
                   {designResults.checks.map((item) => {
-                    const isUpliftCheck = item.id === "soil-contact";
+                    const contact = item.contact;
                     return (
                     <div
                       key={item.id}
@@ -3313,24 +3399,29 @@ export default function Home() {
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
                         <div>
 	                          <div className="text-muted-foreground">
-                              {isUpliftCheck ? "Contact area %" : "Demand"}
+                              {contact ? "Contact" : "Demand"}
                             </div>
 	                          <div className="font-medium">
-	                            <CheckValue
-	                              value={item.demand}
-	                              unit={item.unit}
-	                              units={units}
-	                            />
+	                            {contact ? (
+	                              `${fmt(contact.percent, 1)}%`
+	                            ) : (
+	                              <CheckValue
+	                                value={item.demand}
+	                                unit={item.unit}
+	                                units={units}
+	                              />
+	                            )}
 	                          </div>
 	                        </div>
 	                        <div>
 	                          <div className="text-muted-foreground">
-                              {isUpliftCheck ? "Criterion" : "Capacity"}
+                              {contact ? "State" : "Capacity"}
                             </div>
 	                          <div className="font-medium">
-                              {isUpliftCheck ? (
+                              {contact ? (
                                 <span>
-                                  <MathText>Full preferred; no uplift</MathText>
+                                  {CONTACT_STATE_LABEL[contact.state] ??
+                                    contact.state}
                                 </span>
                               ) : (
                                 <CheckValue
@@ -3342,9 +3433,15 @@ export default function Home() {
 	                          </div>
 	                        </div>
                         <div>
-                          <div className="text-muted-foreground">D/C</div>
+                          <div className="text-muted-foreground">
+                            {contact ? "Min required" : "D/C"}
+                          </div>
                           <div className="font-medium">
-                            {utilizationText(item)}
+                            {contact
+                              ? contact.minRequired > 0
+                                ? `${fmt(contact.minRequired, 1)}%`
+                                : "—"
+                              : utilizationText(item)}
                           </div>
                         </div>
 	                        <div>
@@ -4083,9 +4180,6 @@ export default function Home() {
             >
               <CardHeader className="gap-0.5">
                 <CardTitle>3D model</CardTitle>
-                <CardDescription className="text-[11px]/snug">
-                  Rotatable footing slab with pedestal footprint.
-                </CardDescription>
               </CardHeader>
               <CardContent>
                 <FootingModel3d geometry={geometry} />
@@ -4095,10 +4189,11 @@ export default function Home() {
             <Card id="card-contact-plan" size="sm" className="mt-4">
               <CardHeader className="gap-0.5">
                 <CardTitle>Soil-contact plan</CardTitle>
-                <CardDescription className="text-[11px]/snug">
-                  Compression-only bearing patch for the least-contact service
-                  case.
-                </CardDescription>
+                {contactPlanCase && (
+                  <CardDescription className="text-[11px]/snug">
+                    Load case: {contactPlanCase.name}
+                  </CardDescription>
+                )}
               </CardHeader>
               <CardContent>
                 <ContactPlan

@@ -708,10 +708,10 @@ function serviceBearingCalculations(state: FootingReportState) {
       return calc(`Service bearing - ${loadName(loadCase)}`, [
         String.raw`\eta_{s,svc} = ${num(soilFactors.service, 0)}`,
         String.raw`M_x^* = M_x + H_z h_p + P e_z + \eta_{s,svc}W_s z_s`,
-        String.raw`M_x^* = ${q(loadCase.Mx, "kN m")} + ${q(loadCase.Hz, "kN")}${q(state.geometry.pedestalHeight, "m")} + ${q(loadCase.P, "kN")}${q(state.geometry.pedestalOffsetZ, "m")} + ${num(soilFactors.service, 0)}${q(state.results.summary.soilOverburdenWeight, "kN")}${q(data.soilCentroidZ, "m")} = ${q(moments.mx, "kN m")}`,
+        String.raw`M_x^* = ${q(loadCase.Mx, "kN m")} + ${q(loadCase.Hz, "kN")} \times ${q(state.geometry.pedestalHeight, "m")} + ${q(loadCase.P, "kN")} \times ${q(state.geometry.pedestalOffsetZ, "m")} + ${num(soilFactors.service, 0)} \times ${q(state.results.summary.soilOverburdenWeight, "kN")} \times ${q(data.soilCentroidZ, "m")} = ${q(moments.mx, "kN m")}`,
         String.raw`M_z^* = M_z - H_x h_p - P e_x - \eta_{s,svc}W_s x_s`,
-        String.raw`M_z^* = ${q(loadCase.Mz, "kN m")} - ${q(loadCase.Hx, "kN")}${q(state.geometry.pedestalHeight, "m")} - ${q(loadCase.P, "kN")}${q(state.geometry.pedestalOffsetX, "m")} - ${num(soilFactors.service, 0)}${q(state.results.summary.soilOverburdenWeight, "kN")}${q(data.soilCentroidX, "m")} = ${q(moments.mz, "kN m")}`,
-        String.raw`N = P + W_f + \eta_{s,svc}W_s = ${q(loadCase.P, "kN")} + ${q(state.results.summary.footingSelfWeight, "kN")} + ${num(soilFactors.service, 0)}${q(state.results.summary.soilOverburdenWeight, "kN")} = ${q(row?.axial ?? 0, "kN")}`,
+        String.raw`M_z^* = ${q(loadCase.Mz, "kN m")} - ${q(loadCase.Hx, "kN")} \times ${q(state.geometry.pedestalHeight, "m")} - ${q(loadCase.P, "kN")} \times ${q(state.geometry.pedestalOffsetX, "m")} - ${num(soilFactors.service, 0)} \times ${q(state.results.summary.soilOverburdenWeight, "kN")} \times ${q(data.soilCentroidX, "m")} = ${q(moments.mz, "kN m")}`,
+        String.raw`N = P + W_f + \eta_{s,svc}W_s = ${q(loadCase.P, "kN")} + ${q(state.results.summary.footingSelfWeight, "kN")} + ${num(soilFactors.service, 0)} \times ${q(state.results.summary.soilOverburdenWeight, "kN")} = ${q(row?.axial ?? 0, "kN")}`,
         String.raw`q = \frac{N}{A} \pm \frac{M_x^*}{S_x} \pm \frac{M_z^*}{S_z}`,
         String.raw`q_{max} = ${q(row?.maxBearing ?? 0, "kPa")};\quad q_{min} = ${q(row?.minBearing ?? 0, "kPa")};\quad A=${q(data.area, "m^2")},\;S_x=${q(data.sx, "m^3")},\;S_z=${q(data.sz, "m^3")}`,
         String.raw`\text{Soil contact: ${row?.contactState ?? "full"};}\ ${num(row?.contactPercent ?? 100, 1)}\%\ \text{of base;}\ \Delta P = ${(row?.forceResidual ?? 0).toExponential(2)}\ \text{kN},\ \Delta M = ${(row?.momentResidual ?? 0).toExponential(2)}\ \text{kN·m}\ (${row?.iterations ?? 0}\ \text{iterations})`,
@@ -1611,6 +1611,14 @@ function mathText(text: string) {
     return `@@MATH_${index}@@`;
   };
   const html = esc(text)
+    .replace(/s_max = q_max \/ k_s/g, () => token(String.raw`s_{max} = \frac{q_{max}}{k_s}`))
+    .replace(/qmax = ([0-9.,-]+) kPa\./g, (_, q) => token(String.raw`q_{max} = ${formatTexNumberForUnit(q, "kPa")}\,\mathrm{kPa}`))
+    .replace(/theta_x = \|dq\/dz\| \/ k_s/g, () => token(String.raw`\theta_x = \frac{\lvert dq/dz \rvert}{k_s}`))
+    .replace(/theta_z = \|dq\/dx\| \/ k_s/g, () => token(String.raw`\theta_z = \frac{\lvert dq/dx \rvert}{k_s}`))
+    .replace(/dq\/dz = ([0-9.,-]+) kPa\/m\./g, (_, v) => token(String.raw`\frac{dq}{dz} = ${formatTexNumberForUnit(v, "kPa")}\,\mathrm{kPa/m}`))
+    .replace(/dq\/dx = ([0-9.,-]+) kPa\/m\./g, (_, v) => token(String.raw`\frac{dq}{dx} = ${formatTexNumberForUnit(v, "kPa")}\,\mathrm{kPa/m}`))
+    .replace(/([0-9.]+) \|Mx\| &lt;= N B\/2\./g, (_, sf) => token(String.raw`${formatTexNumber(sf)}\,\lvert M_x \rvert \le \frac{NB}{2}`))
+    .replace(/([0-9.]+) \|Mz\| &lt;= N L\/2\./g, (_, sf) => token(String.raw`${formatTexNumber(sf)}\,\lvert M_z \rvert \le \frac{NL}{2}`))
     .replace(/q = P\/A \+\/- Mx\/Sx \+\/- Mz\/Sz/g, () => token(String.raw`q = \frac{P}{A}\pm\frac{M_x}{S_x}\pm\frac{M_z}{S_z}`))
     .replace(/H &lt;= mu N \/ 1.5/g, () => token(String.raw`H \le \frac{\mu N}{1.5}`))
     .replace(/N = ([0-9.,-]+) kN including footing self-weight( and (?:applied service )?soil overburden)?\./g, (_, n, overburden) => token(String.raw`N = ${formatTexNumberForUnit(n, "kN")}\,\mathrm{kN}\quad\text{including footing self-weight${overburden ? " and applied service soil overburden" : ""}}`))

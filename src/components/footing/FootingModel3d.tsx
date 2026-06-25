@@ -212,7 +212,7 @@ function FootingScene({
   const axisOriginY = footingThickness + pedestalHeight + 0.08;
   const cameraTarget: [number, number, number] = [
     (minX + maxX) / 2,
-    visualHeight / 2 - footingThickness / 2,
+    modelHeight / 2 - footingThickness / 2,
     (minZ + maxZ) / 2,
   ];
 
@@ -379,7 +379,7 @@ export function FootingModel3d({ geometry }: Props) {
         <color attach="background" args={["#f8fafc"]} />
         <FootingScene geometry={geometry} planeVisibility={planeVisibility} />
       </Canvas>
-      <div className="absolute right-3 top-3 rounded-md border bg-white/85 text-[11px] font-medium shadow-sm backdrop-blur dark:bg-slate-950/75">
+      <div className="absolute bottom-3 right-3 flex flex-col-reverse rounded-md border bg-white/85 text-[11px] font-medium shadow-sm backdrop-blur dark:bg-slate-950/75">
         <button
           type="button"
           onClick={() => setLegendOpen((open) => !open)}
@@ -389,7 +389,7 @@ export function FootingModel3d({ geometry }: Props) {
           Soil layers
         </button>
         {legendOpen && (
-          <div className="border-t px-2 py-1.5">
+          <div className="border-b px-2 py-1.5">
             {SOIL_PLANES.map((plane) => (
               <label
                 key={plane.key}

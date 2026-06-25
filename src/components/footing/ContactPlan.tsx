@@ -9,7 +9,7 @@ interface Props {
   formatPressure: (kPa: number) => string;
 }
 
-const PAD = 26;
+const PAD = 8;
 const DRAW = 210;
 
 // Soil-contact pressure plan for a single service load case. Shows the footing

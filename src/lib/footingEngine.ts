@@ -108,6 +108,12 @@ export interface DesignCheck {
   basis: string;
   details: string[];
   notes: string[];
+  /** Present only on the soil-contact check; drives its custom metric row. */
+  contact?: {
+    state: ContactState;
+    percent: number;
+    minRequired: number;
+  };
 }
 
 export interface BearingCaseResult {
@@ -978,17 +984,21 @@ function conservativeTwoLayerEffectiveDepth(
   return Math.max(thicknessM * 1000 - Math.max(coverMm, 0) - largerBar - smallerBar / 2, 0);
 }
 
+function minimumSteelRatio(standard: ConcreteStandard, fyMpa: number) {
+  if (isAci(standard)) {
+    if (fyMpa < 420) return 0.002;
+    return Math.max(0.0018 * (420 / positive(fyMpa)), 0.0014);
+  }
+
+  return 0.002;
+}
+
 function minimumSteel(
   standard: ConcreteStandard,
   concreteAreaMm2: number,
   fyMpa: number
 ) {
-  if (isAci(standard)) {
-    if (fyMpa < 420) return 0.002 * concreteAreaMm2;
-    return Math.max(0.0018 * (420 / positive(fyMpa)), 0.0014) * concreteAreaMm2;
-  }
-
-  return 0.002 * concreteAreaMm2;
+  return minimumSteelRatio(standard, fyMpa) * concreteAreaMm2;
 }
 
 function aciFlexuralCapacity(asMm2PerM: number, dMm: number, fcMpa: number, fyMpa: number) {
@@ -1548,6 +1558,7 @@ export function calculateFootingDesign({
   );
   const concreteAreaX = 1000 * geometry.footingThickness * 1000;
   const concreteAreaZ = 1000 * geometry.footingThickness * 1000;
+  const minSteelRatio = minimumSteelRatio(concreteStandard, materials.rebarYield);
   const asMinX = minimumSteel(concreteStandard, concreteAreaX, materials.rebarYield);
   const asMinZ = minimumSteel(concreteStandard, concreteAreaZ, materials.rebarYield);
   const assumptions = [
@@ -1664,7 +1675,7 @@ export function calculateFootingDesign({
       governingCase: "Geometry",
       basis: "Footing bottom depth must be at or below the entered frost depth.",
       details: [
-        `Footing top depth = ${round(Math.max(finite(geometry.soilCoverDepth), 0))} m.`,
+        `Frost depth = ${round(Math.max(finite(geometry.frostDepth), 0))} m.`,
         `Footing bottom depth = ${round(Math.max(finite(geometry.soilCoverDepth), 0) + Math.max(finite(geometry.footingThickness), 0))} m.`,
       ],
     })
@@ -1709,8 +1720,6 @@ export function calculateFootingDesign({
         "Compression-only soil contact: full contact preferred; partial contact (resultant outside the kern) is permitted with bearing taken at the redistributed peak; zero contact (net uplift) is not allowed.",
       details: contactGoverning
         ? [
-            `Contact state: ${contactGoverning.contactState}.`,
-            `Contact area = ${round(contactGoverning.contactPercent, 1)}% of the footing base.`,
             `Peak bearing q_max = ${round(contactGoverning.maxBearing)} kPa at the compression edge.`,
             `Equilibrium residuals: dP = ${contactGoverning.forceResidual.toExponential(2)} kN, dM = ${contactGoverning.momentResidual.toExponential(2)} kN-m after ${contactGoverning.iterations} iteration(s).`,
           ]
@@ -1725,6 +1734,11 @@ export function calculateFootingDesign({
     // Engineer-set floor on contact area. 0 keeps partial contact a warning;
     // any partial case below the floor is escalated to a failure.
     const minContact = Math.min(Math.max(finite(materials.minimumContactRatio, 0), 0), 100);
+    contactCheck.contact = {
+      state,
+      percent: contactGoverning.contactPercent,
+      minRequired: minContact,
+    };
     const belowFloor =
       state === "partial" && contactGoverning.contactPercent < minContact - EPS;
     contactCheck.status =
@@ -1743,12 +1757,6 @@ export function calculateFootingDesign({
             ? Number.POSITIVE_INFINITY
             : 1
           : Number.POSITIVE_INFINITY;
-    if (minContact > 0) {
-      contactCheck.details = [
-        ...contactCheck.details,
-        `Minimum required contact = ${round(minContact, 1)}% (engineer-set); governing case provides ${round(contactGoverning.contactPercent, 1)}%.`,
-      ];
-    }
   }
 
   const slidingRows = serviceLoadCases.map((loadCase) => {
@@ -1902,7 +1910,10 @@ export function calculateFootingDesign({
       governingCase: rotationXGoverning?.name ?? "No service cases",
       basis: "Rigid-footing Winkler check: theta_x = |dq/dz| / k_s.",
       details: rotationXGoverning
-        ? [`dq/dz = ${round(rotationXGoverning.qz)} kPa/m.`]
+        ? [
+            `dq/dz = ${round(rotationXGoverning.qz)} kPa/m.`,
+            "dq/dz is the soil bearing-pressure gradient along z: how much the contact pressure changes per metre across the footing. Caused by the applied moment; dividing it by the subgrade modulus k_s converts the pressure slope into the footing tilt theta_x.",
+          ]
         : [],
       invalid: serviceBearing.length === 0,
     }),
@@ -1915,7 +1926,10 @@ export function calculateFootingDesign({
       governingCase: rotationZGoverning?.name ?? "No service cases",
       basis: "Rigid-footing Winkler check: theta_z = |dq/dx| / k_s.",
       details: rotationZGoverning
-        ? [`dq/dx = ${round(rotationZGoverning.qx)} kPa/m.`]
+        ? [
+            `dq/dx = ${round(rotationZGoverning.qx)} kPa/m.`,
+            "dq/dx is the soil bearing-pressure gradient along x: how much the contact pressure changes per metre across the footing. Caused by the applied moment; dividing it by the subgrade modulus k_s converts the pressure slope into the footing tilt theta_z.",
+          ]
         : [],
       invalid: serviceBearing.length === 0,
     })
@@ -1950,7 +1964,10 @@ export function calculateFootingDesign({
       unit: "mm2/m",
       governingCase: "Reinforcement",
       basis: params.minSteelBasis,
-      details: [`Provided AsX = ${round(asX)} mm2/m.`],
+      details: [
+        `Minimum ratio rho_min = ${(minSteelRatio * 100).toFixed(2)}% of gross concrete area.`,
+        `Provided AsX = ${round(asX)} mm2/m.`,
+      ],
     }),
     check({
       id: "minimum-steel-z",
@@ -1960,7 +1977,10 @@ export function calculateFootingDesign({
       unit: "mm2/m",
       governingCase: "Reinforcement",
       basis: params.minSteelBasis,
-      details: [`Provided AsZ = ${round(asZ)} mm2/m.`],
+      details: [
+        `Minimum ratio rho_min = ${(minSteelRatio * 100).toFixed(2)}% of gross concrete area.`,
+        `Provided AsZ = ${round(asZ)} mm2/m.`,
+      ],
     })
   );
 
