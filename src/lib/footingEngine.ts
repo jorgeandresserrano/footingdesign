@@ -1,3 +1,11 @@
+import {
+  clipPolygonToRect,
+  planeIntegrals,
+  solveContact,
+  type ContactState,
+  type Point,
+} from "./contact";
+
 export type BuildingCode =
   | "IBC-2018"
   | "IBC-2024"
@@ -48,6 +56,10 @@ export interface EngineMaterials {
   allowableSettlement: number;
   allowableRotationX: number;
   allowableRotationZ: number;
+  // Minimum acceptable soil-contact area as a percent of the footing base
+  // (0 = allow any partial contact as a warning; 100 = require full contact /
+  // resultant in the kern). Partial contact below this fails the contact check.
+  minimumContactRatio: number;
 }
 
 export interface ReinforcementInputs {
@@ -114,6 +126,16 @@ export interface BearingCaseResult {
   eccentricityX: number | null;
   eccentricityZ: number | null;
   resultantWithinKern: boolean;
+  contactState: ContactState;
+  contactPercent: number;
+  contactArea: number;
+  contactPolygon: [number, number][];
+  // Soil pressure at the four footing corners, clamped to >= 0 for compression
+  // only, ordered [-x-z, +x-z, +x+z, -x+z]. Used to render the pressure plan.
+  cornerPressures: number[];
+  forceResidual: number;
+  momentResidual: number;
+  iterations: number;
 }
 
 export interface StructuralCaseResult {
@@ -129,6 +151,11 @@ export interface StructuralCaseResult {
   flexureZ: number;
   punchingStress: number;
   punchingCapacity: number;
+  contactState: ContactState;
+  contactPercent: number;
+  forceResidual: number;
+  momentResidual: number;
+  iterations: number;
 }
 
 export interface FootingDesignResult {
@@ -176,6 +203,16 @@ interface Rect {
   zMax: number;
 }
 
+interface ContactDiagnostics {
+  state: ContactState;
+  percent: number;
+  area: number;
+  peak: number;
+  forceResidual: number;
+  momentResidual: number;
+  iterations: number;
+}
+
 interface PressureField {
   axial: number;
   mx: number;
@@ -185,6 +222,11 @@ interface PressureField {
   qz: number;
   max: number;
   min: number;
+  // Region over which the soil reaction acts. For full contact this is the
+  // whole footing rectangle; under partial contact it is the compression-only
+  // contact polygon and q0/qx/qz are the re-solved plane coefficients.
+  polygon: Point[];
+  contact: ContactDiagnostics;
 }
 
 interface SoilOverburden {
@@ -481,16 +523,66 @@ function pressureField(
     pressureAt({ q0, qx, qz }, -length / 2, width / 2),
     pressureAt({ q0, qx, qz }, length / 2, width / 2),
   ];
+  const min = Math.min(...corners);
+  const max = Math.max(...corners);
+  const fullPolygon: Point[] = [
+    [-length / 2, -width / 2],
+    [length / 2, -width / 2],
+    [length / 2, width / 2],
+    [-length / 2, width / 2],
+  ];
 
+  // Full contact: the linear plane is non-negative across the whole base.
+  // Keep q0/qx/qz, max/min, and the footing rectangle unchanged so every
+  // full-contact result is numerically identical to before.
+  if (min >= -EPS) {
+    return {
+      axial,
+      mx,
+      mz,
+      q0,
+      qx,
+      qz,
+      max,
+      min,
+      polygon: fullPolygon,
+      contact: {
+        state: "full",
+        percent: 100,
+        area,
+        peak: max,
+        forceResidual: 0,
+        momentResidual: 0,
+        iterations: 0,
+      },
+    };
+  }
+
+  // Partial contact / uplift: the linear field implies tension, which a soil
+  // reaction cannot carry. Re-solve a compression-only plane clipped to the
+  // contact polygon. solveContact uses the convention int(q*x)=-Mz, int(q*z)=Mx,
+  // so we pass (Mx=mx, Mz=-mz) to land on this engine's int(q*x)=mz, int(q*z)=mx.
+  const result = solveContact(axial, mx, -mz, length, width);
+  const [a, b, c] = result.coefficients;
   return {
     axial,
     mx,
     mz,
-    q0,
-    qx,
-    qz,
-    max: Math.max(...corners),
-    min: Math.min(...corners),
+    q0: a,
+    qx: b,
+    qz: c,
+    max: result.peak,
+    min: 0,
+    polygon: result.polygon,
+    contact: {
+      state: result.state,
+      percent: result.percent,
+      area: result.area,
+      peak: result.peak,
+      forceResidual: result.forceResidual,
+      momentResidual: result.momentResidual,
+      iterations: result.iterations,
+    },
   };
 }
 
@@ -500,6 +592,13 @@ function pressureAt(
   z: number
 ) {
   return field.q0 + field.qx * x + field.qz * z;
+}
+
+// Soil reaction at a point, honoring compression-only contact: outside the
+// contact polygon the plane is <= 0, so clamping at zero yields the true field.
+function grossSoilPressureAt(field: PressureField, x: number, z: number) {
+  const q = pressureAt(field, x, z);
+  return field.contact.state === "full" ? q : Math.max(0, q);
 }
 
 function netPressureExtremes(
@@ -521,7 +620,7 @@ function netPressureExtremes(
       [rect.xMax, rect.zMin],
       [rect.xMax, rect.zMax],
     ].map(([x, z]) =>
-      pressureAt(grossField, x, z) -
+      grossSoilPressureAt(grossField, x, z) -
       concretePressure -
       (hasSoil ? soilPressure : 0)
     )
@@ -705,6 +804,30 @@ function rectIntegrals(rect: Rect) {
   return { area, ix1, iz1, ix2, iz2, ixz };
 }
 
+// Geometric moments of the soil-reaction region within `rect`:
+// { A, x:int(x), z:int(z), xx:int(x^2), zz:int(z^2), xz:int(xz) } over dA.
+// Full contact reuses the exact closed-form rect integrals (no numeric drift).
+// Partial contact integrates over rect intersected with the contact polygon;
+// an empty intersection (rect fully lifted) returns zeros so the gross soil
+// reaction there is 0 while downward self-weight is still subtracted by callers.
+function grossRegionMoments(
+  field: PressureField,
+  rect: Rect,
+  rectInt: NonNullable<ReturnType<typeof rectIntegrals>>
+) {
+  if (field.contact.state === "full") {
+    return {
+      A: rectInt.area,
+      x: rectInt.ix1,
+      z: rectInt.iz1,
+      xx: rectInt.ix2,
+      zz: rectInt.iz2,
+      xz: rectInt.ixz,
+    };
+  }
+  return planeIntegrals(clipPolygonToRect(field.polygon, rect));
+}
+
 function isStructuralField(field: PressureField): field is StructuralPressureField {
   return "concretePressure" in field;
 }
@@ -750,10 +873,8 @@ function uniformPressureMomentZ(pressure: number, rect: Rect) {
 function integrateForce(field: PressureField, rect: Rect) {
   const integrals = rectIntegrals(rect);
   if (!integrals) return 0;
-  const gross =
-    field.q0 * integrals.area +
-    field.qx * integrals.ix1 +
-    field.qz * integrals.iz1;
+  const m = grossRegionMoments(field, rect, integrals);
+  const gross = field.q0 * m.A + field.qx * m.x + field.qz * m.z;
   const structural = asStructuralField(field);
   if (!structural) return gross;
   const soilForce = structural.soilRects.reduce((sum, soilRect) => {
@@ -770,10 +891,11 @@ function integrateMomentAboutXPlane(
 ) {
   const integrals = rectIntegrals(rect);
   if (!integrals) return 0;
+  const m = grossRegionMoments(field, rect, integrals);
   const gross =
-    field.q0 * (integrals.ix1 - planeX * integrals.area) +
-    field.qx * (integrals.ix2 - planeX * integrals.ix1) +
-    field.qz * (integrals.ixz - planeX * integrals.iz1);
+    field.q0 * (m.x - planeX * m.A) +
+    field.qx * (m.xx - planeX * m.x) +
+    field.qz * (m.xz - planeX * m.z);
   const structural = asStructuralField(field);
   if (!structural) return gross;
   const soilMoment = structural.soilRects.reduce((sum, soilRect) => {
@@ -790,10 +912,11 @@ function integrateMomentAboutZPlane(
 ) {
   const integrals = rectIntegrals(rect);
   if (!integrals) return 0;
+  const m = grossRegionMoments(field, rect, integrals);
   const gross =
-    field.q0 * (integrals.iz1 - planeZ * integrals.area) +
-    field.qx * (integrals.ixz - planeZ * integrals.ix1) +
-    field.qz * (integrals.iz2 - planeZ * integrals.iz1);
+    field.q0 * (m.z - planeZ * m.A) +
+    field.qx * (m.xz - planeZ * m.x) +
+    field.qz * (m.zz - planeZ * m.z);
   const structural = asStructuralField(field);
   if (!structural) return gross;
   const soilMoment = structural.soilRects.reduce((sum, soilRect) => {
@@ -806,10 +929,8 @@ function integrateMomentAboutZPlane(
 function integratePressureMomentX(field: PressureField, rect: Rect) {
   const integrals = rectIntegrals(rect);
   if (!integrals) return 0;
-  const gross =
-    field.q0 * integrals.iz1 +
-    field.qx * integrals.ixz +
-    field.qz * integrals.iz2;
+  const m = grossRegionMoments(field, rect, integrals);
+  const gross = field.q0 * m.z + field.qx * m.xz + field.qz * m.zz;
   const structural = asStructuralField(field);
   if (!structural) return gross;
   const soilMoment = structural.soilRects.reduce((sum, soilRect) => {
@@ -822,10 +943,8 @@ function integratePressureMomentX(field: PressureField, rect: Rect) {
 function integratePressureMomentZ(field: PressureField, rect: Rect) {
   const integrals = rectIntegrals(rect);
   if (!integrals) return 0;
-  const gross =
-    field.q0 * integrals.ix1 +
-    field.qx * integrals.ix2 +
-    field.qz * integrals.ixz;
+  const m = grossRegionMoments(field, rect, integrals);
+  const gross = field.q0 * m.x + field.qx * m.xx + field.qz * m.xz;
   const structural = asStructuralField(field);
   if (!structural) return gross;
   const soilMoment = structural.soilRects.reduce((sum, soilRect) => {
@@ -1439,7 +1558,7 @@ export function calculateFootingDesign({
     "Service bearing, sliding, overturning, settlement, and rotation include footing self-weight plus applied service soil overburden.",
     "Strength flexure and shear include factored soil overburden only in Full mode; net structural demand subtracts matching factored distributed concrete and applied soil loads.",
     "Orthogonal bottom bars are treated conservatively as a two-layer mat; both d_x and d_z use the upper-layer effective depth.",
-    "Soil pressure uses linear elastic distribution. Negative pressure means contact loss; affected structural checks are flagged.",
+    "Soil pressure uses a rigid-footing linear distribution. When the resultant leaves the kern the reaction is solved as compression-only: tension is not carried, and bearing plus structural demands are integrated over the reduced contact polygon.",
     "ACI 336.2R rigidity result is adapted for isolated footings using Leff = 4a; flexible classification means use soil-structure interaction instead of the linear pressure assumption.",
     "Pedestal is treated as a rectangular loaded area. Pedestal and pedestal-to-footing transfer design are outside this footing-slab check.",
   ];
@@ -1467,7 +1586,20 @@ export function calculateFootingDesign({
       rotationZ: Math.abs(field.qx) / Math.max(materials.subgradeReactionModulus, EPS),
       eccentricityX: Math.abs(axial) > EPS ? moments.mz / axial : null,
       eccentricityZ: Math.abs(axial) > EPS ? moments.mx / axial : null,
-      resultantWithinKern: field.min >= -EPS,
+      resultantWithinKern: field.contact.state === "full",
+      contactState: field.contact.state,
+      contactPercent: field.contact.percent,
+      contactArea: field.contact.area,
+      contactPolygon: field.polygon,
+      cornerPressures: [
+        [-geometry.footingLength / 2, -geometry.footingWidth / 2],
+        [geometry.footingLength / 2, -geometry.footingWidth / 2],
+        [geometry.footingLength / 2, geometry.footingWidth / 2],
+        [-geometry.footingLength / 2, geometry.footingWidth / 2],
+      ].map(([x, z]) => grossSoilPressureAt(field, x, z)),
+      forceResidual: field.contact.forceResidual,
+      momentResidual: field.contact.momentResidual,
+      iterations: field.contact.iterations,
     };
   });
 
@@ -1510,6 +1642,11 @@ export function calculateFootingDesign({
       flexureZ: row.flexure.z,
       punchingStress: row.punching.stress,
       punchingCapacity: row.punching.capacity,
+      contactState: row.field.contact.state,
+      contactPercent: row.field.contact.percent,
+      forceResidual: row.field.contact.forceResidual,
+      momentResidual: row.field.contact.momentResidual,
+      iterations: row.field.contact.iterations,
     };
   });
 
@@ -1555,26 +1692,63 @@ export function calculateFootingDesign({
     })
   );
 
-  const upliftGoverning = governing(serviceBearing, (result) => -result.minBearing);
+  // Worst contact = lowest contact percentage (zero/failed score highest).
+  const contactGoverning = governing(
+    serviceBearing,
+    (result) => 100 - result.contactPercent
+  );
   checks.push(
     check({
       id: "soil-contact",
-      label: "Uplift check",
-      demand: upliftGoverning?.minBearing ?? null,
-      capacity: 0,
-      unit: "kPa",
-      governingCase: upliftGoverning?.name ?? "No service cases",
-      basis: "qmin >= 0 kPa.",
-      details: [],
+      label: "Soil contact",
+      demand: contactGoverning?.contactPercent ?? null,
+      capacity: 100,
+      unit: "ratio",
+      governingCase: contactGoverning?.name ?? "No service cases",
+      basis:
+        "Compression-only soil contact: full contact preferred; partial contact (resultant outside the kern) is permitted with bearing taken at the redistributed peak; zero contact (net uplift) is not allowed.",
+      details: contactGoverning
+        ? [
+            `Contact state: ${contactGoverning.contactState}.`,
+            `Contact area = ${round(contactGoverning.contactPercent, 1)}% of the footing base.`,
+            `Peak bearing q_max = ${round(contactGoverning.maxBearing)} kPa at the compression edge.`,
+            `Equilibrium residuals: dP = ${contactGoverning.forceResidual.toExponential(2)} kN, dM = ${contactGoverning.momentResidual.toExponential(2)} kN-m after ${contactGoverning.iterations} iteration(s).`,
+          ]
+        : [],
       notes: [],
       invalid: serviceBearing.length === 0,
     })
   );
-  const upliftCheck = checks[checks.length - 1];
-  if (upliftCheck.demand !== null) {
-    upliftCheck.utilization =
-      upliftCheck.demand >= -EPS ? 0 : Number.POSITIVE_INFINITY;
-    upliftCheck.status = upliftCheck.demand >= -EPS ? "pass" : "fail";
+  const contactCheck = checks[checks.length - 1];
+  if (contactGoverning) {
+    const state = contactGoverning.contactState;
+    // Engineer-set floor on contact area. 0 keeps partial contact a warning;
+    // any partial case below the floor is escalated to a failure.
+    const minContact = Math.min(Math.max(finite(materials.minimumContactRatio, 0), 0), 100);
+    const belowFloor =
+      state === "partial" && contactGoverning.contactPercent < minContact - EPS;
+    contactCheck.status =
+      state === "full"
+        ? "pass"
+        : state === "partial"
+          ? belowFloor
+            ? "fail"
+            : "warning"
+          : "fail";
+    contactCheck.utilization =
+      state === "full"
+        ? 0
+        : state === "partial"
+          ? belowFloor
+            ? Number.POSITIVE_INFINITY
+            : 1
+          : Number.POSITIVE_INFINITY;
+    if (minContact > 0) {
+      contactCheck.details = [
+        ...contactCheck.details,
+        `Minimum required contact = ${round(minContact, 1)}% (engineer-set); governing case provides ${round(contactGoverning.contactPercent, 1)}%.`,
+      ];
+    }
   }
 
   const slidingRows = serviceLoadCases.map((loadCase) => {
@@ -1790,16 +1964,18 @@ export function calculateFootingDesign({
     })
   );
 
-  const strengthWarnings = strengthCases.some((row) => row.minGrossBearing < -EPS);
+  // Cases whose compression-only contact did not converge (the load resultant
+  // falls off the footing) yield meaningless, exploding structural demands.
+  // Exclude them from governing selection and flag instead of reporting garbage.
+  const validStrengthRows = strengthRows.filter(
+    (row) => row.field.contact.state !== "failed"
+  );
+  const strengthContactFailed = strengthRows.length > validStrengthRows.length;
+  const STRENGTH_CONTACT_FAIL_NOTE =
+    "One or more strength cases have no resolvable soil contact (load resultant off the footing). Those cases are excluded from the structural demand and must be corrected.";
   const rigidity = rigidityAdvice(geometry, materials);
-  const flexureGoverningX = governing(
-    strengthRows,
-    (row) => row.flexure.x
-  );
-  const flexureGoverningZ = governing(
-    strengthRows,
-    (row) => row.flexure.z
-  );
+  const flexureGoverningX = governing(validStrengthRows, (row) => row.flexure.x);
+  const flexureGoverningZ = governing(validStrengthRows, (row) => row.flexure.z);
   const flexureCapacityX = flexuralCapacity(
     concreteStandard,
     asX,
@@ -1850,8 +2026,8 @@ export function calculateFootingDesign({
             `Required As = ${round(requiredAsX)} mm2/m; provided As = ${round(asX)} mm2/m.`,
           ]
         : [],
-      notes: strengthWarnings ? ["Strength gross bearing has contact loss in at least one load case."] : [],
-      invalid: strengthLoadCases.length === 0 || strengthWarnings,
+      notes: strengthContactFailed ? [STRENGTH_CONTACT_FAIL_NOTE] : [],
+      invalid: strengthLoadCases.length === 0 || validStrengthRows.length === 0,
     }),
     check({
       id: "flexure-z",
@@ -1867,8 +2043,8 @@ export function calculateFootingDesign({
             `Required As = ${round(requiredAsZ)} mm2/m; provided As = ${round(asZ)} mm2/m.`,
           ]
         : [],
-      notes: strengthWarnings ? ["Strength gross bearing has contact loss in at least one load case."] : [],
-      invalid: strengthLoadCases.length === 0 || strengthWarnings,
+      notes: strengthContactFailed ? [STRENGTH_CONTACT_FAIL_NOTE] : [],
+      invalid: strengthLoadCases.length === 0 || validStrengthRows.length === 0,
     })
   );
 
@@ -1904,8 +2080,8 @@ export function calculateFootingDesign({
     );
   }
 
-  const oneWayGoverningX = governing(strengthRows, (row) => row.oneWay.x);
-  const oneWayGoverningZ = governing(strengthRows, (row) => row.oneWay.z);
+  const oneWayGoverningX = governing(validStrengthRows, (row) => row.oneWay.x);
+  const oneWayGoverningZ = governing(validStrengthRows, (row) => row.oneWay.z);
   const oneWayCapacityX = oneWayShearCapacityPerMeter(
     concreteStandard,
     materials.concreteStrength,
@@ -1930,8 +2106,8 @@ export function calculateFootingDesign({
       details: oneWayGoverningX
         ? [`Critical side = ${oneWayGoverningX.oneWay.xSide}.`]
         : [],
-      notes: strengthWarnings ? ["Strength gross bearing has contact loss in at least one load case."] : [],
-      invalid: strengthLoadCases.length === 0 || strengthWarnings,
+      notes: strengthContactFailed ? [STRENGTH_CONTACT_FAIL_NOTE] : [],
+      invalid: strengthLoadCases.length === 0 || validStrengthRows.length === 0,
     }),
     check({
       id: "one-way-shear-z",
@@ -1944,13 +2120,13 @@ export function calculateFootingDesign({
       details: oneWayGoverningZ
         ? [`Critical side = ${oneWayGoverningZ.oneWay.zSide}.`]
         : [],
-      notes: strengthWarnings ? ["Strength gross bearing has contact loss in at least one load case."] : [],
-      invalid: strengthLoadCases.length === 0 || strengthWarnings,
+      notes: strengthContactFailed ? [STRENGTH_CONTACT_FAIL_NOTE] : [],
+      invalid: strengthLoadCases.length === 0 || validStrengthRows.length === 0,
     })
   );
 
   const punchingGoverning = governing(
-    strengthRows,
+    validStrengthRows,
     (row) => row.punching.capacity <= EPS ? Number.POSITIVE_INFINITY : row.punching.stress / row.punching.capacity
   );
   checks.push(
@@ -1969,8 +2145,8 @@ export function calculateFootingDesign({
             `vu direct = ${round(punchingGoverning.punching.directStress)} MPa, vu(Mx) = ${round(punchingGoverning.punching.momentStressX)} MPa, vu(Mz) = ${round(punchingGoverning.punching.momentStressZ)} MPa.`,
           ]
         : [],
-      notes: strengthWarnings ? ["Strength gross bearing has contact loss in at least one load case."] : [],
-      invalid: strengthLoadCases.length === 0 || strengthWarnings,
+      notes: strengthContactFailed ? [STRENGTH_CONTACT_FAIL_NOTE] : [],
+      invalid: strengthLoadCases.length === 0 || validStrengthRows.length === 0,
     })
   );
 
