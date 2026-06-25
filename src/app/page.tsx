@@ -8,11 +8,14 @@ import {
   Calculator,
   CheckCircle2,
   Copy,
+  Download,
+  FilePlus2,
   Info,
   MinusCircle,
   Pencil,
   RotateCcw,
   Trash2,
+  Upload,
   X,
   XCircle,
 } from "lucide-react";
@@ -62,6 +65,7 @@ import {
 } from "@/components/ui/tooltip";
 import { NumField } from "@/components/footing/NumField";
 import { TableOfContents } from "@/components/footing/TableOfContents";
+import { ContactPlan } from "@/components/footing/ContactPlan";
 import type { FootingGeometry } from "@/components/footing/FootingModel3d";
 import {
   calculateFootingDesign,
@@ -72,6 +76,11 @@ import {
   type SoilTreatmentMode,
 } from "@/lib/footingEngine";
 import { createFootingCalculationBriefHtml } from "@/lib/footingReport";
+import {
+  downloadProject,
+  validateProject,
+  type FootingProjectState,
+} from "@/lib/footingProject";
 import {
   DEFAULT_DISPLAY_PRECISION,
   DISPLAY_PRECISION_ROWS,
@@ -95,7 +104,7 @@ const FootingModel3d = dynamic(
   }
 );
 
-type UnitSystem = "SI" | "USC";
+export type UnitSystem = "SI" | "USC";
 type BuildingCode =
   | "IBC-2018"
   | "IBC-2024"
@@ -376,7 +385,7 @@ const MATH_TEXT_PATTERNS: MathTextPattern[] = [
   },
 ];
 
-interface MaterialInputs {
+export interface MaterialInputs {
   concreteStrength: number;
   concreteElasticModulus: number;
   rebarYield: number;
@@ -394,9 +403,10 @@ interface MaterialInputs {
   allowableSettlement: number;
   allowableRotationX: number;
   allowableRotationZ: number;
+  minimumContactRatio: number;
 }
 
-interface LoadCase {
+export interface LoadCase {
   id: string;
   name: string;
   P: number;
@@ -410,7 +420,7 @@ interface LoadCase {
 
 type ReinforcementInputs = EngineReinforcementInputs;
 
-type LoadCombinationType = "service" | "strength";
+export type LoadCombinationType = "service" | "strength";
 type LoadCaseColumn =
   | "name"
   | "P"
@@ -456,6 +466,7 @@ const DEFAULT_MATERIALS_SI: MaterialInputs = {
   allowableSettlement: 25,
   allowableRotationX: 0.003,
   allowableRotationZ: 0.003,
+  minimumContactRatio: 0,
 };
 
 const DEFAULT_REINFORCEMENT_SI: ReinforcementInputs = {
@@ -730,6 +741,7 @@ function convertMaterials(
     ),
     allowableRotationX: materials.allowableRotationX,
     allowableRotationZ: materials.allowableRotationZ,
+    minimumContactRatio: materials.minimumContactRatio,
   };
 }
 
@@ -1249,6 +1261,7 @@ export default function Home() {
     useState<SoilTreatmentMode>("service");
   const [isSelectingCells, setIsSelectingCells] = useState(false);
   const isSelectingCellsRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedCells, setSelectedCells] = useState<SelectionRange | null>(
     null
   );
@@ -1415,6 +1428,21 @@ export default function Home() {
         : governing,
     null
   );
+  // Case with the least soil contact: the most informative one to draw.
+  const contactPlanCase = designResults.serviceBearing.reduce<
+    (typeof designResults.serviceBearing)[number] | null
+  >(
+    (worst, result) =>
+      !worst || result.contactPercent < worst.contactPercent ? result : worst,
+    null
+  );
+  const formatPressure = (kPa: number) =>
+    `${formatDisplay(convertedValue(kPa, "kPa", units), bearingUnit)} ${bearingUnit}`;
+  // The engine runs in SI, so the contact polygon and corner pressures are in
+  // SI; the plan must use SI geometry to stay self-consistent (it's an unlabeled
+  // shape, so the unit system itself is invisible).
+  const siGeometryForPlan =
+    units === "SI" ? geometry : convertGeometry(geometry, "USC", "SI");
   const governingStrengthCase = designResults.strengthCases.reduce<
     (typeof designResults.strengthCases)[number] | null
   >(
@@ -1877,6 +1905,60 @@ export default function Home() {
     setStrengthLoadCases(defaultStrengthLoadCases(units));
   };
 
+  const newProject = () => {
+    setModelName("Untitled footing");
+    resetInputs();
+  };
+
+  const exportProject = () => {
+    const state: FootingProjectState = {
+      modelName,
+      units,
+      buildingCode,
+      loadStandard,
+      concreteStandard,
+      displayPrecision,
+      loadCombinationType,
+      soilTreatmentMode,
+      concreteModulusOverridden,
+      geometry,
+      materials,
+      reinforcement,
+      serviceLoadCases,
+      strengthLoadCases,
+    };
+    downloadProject(state);
+  };
+
+  // Values are stored verbatim in the file's own unit system, so we set `units`
+  // and the raw inputs together without calling switchUnits (no double-convert).
+  const importProject = async (file?: File | null) => {
+    if (!file) return;
+    try {
+      const parsed = validateProject(JSON.parse(await file.text()));
+      setModelName(parsed.modelName || "Untitled footing");
+      setUnits(parsed.units);
+      setBuildingCode(parsed.buildingCode);
+      setLoadStandard(parsed.loadStandard);
+      setConcreteStandard(parsed.concreteStandard);
+      setDisplayPrecision(parsed.displayPrecision);
+      setLoadCombinationType(parsed.loadCombinationType);
+      setSoilTreatmentMode(parsed.soilTreatmentMode);
+      setConcreteModulusOverridden(parsed.concreteModulusOverridden);
+      setGeometry(parsed.geometry);
+      // Merge over defaults so fields added in newer schemas (e.g.
+      // minimumContactRatio) are present when importing an older file.
+      setMaterials({ ...defaultMaterials(parsed.units), ...parsed.materials });
+      setReinforcement(parsed.reinforcement);
+      setServiceLoadCases(parsed.serviceLoadCases);
+      setStrengthLoadCases(parsed.strengthLoadCases);
+    } catch (error) {
+      window.alert(
+        error instanceof Error ? error.message : "Invalid project file."
+      );
+    }
+  };
+
   const updateBuildingCode = (nextBuildingCode: BuildingCode) => {
     const references = CODE_REFERENCES[nextBuildingCode];
     setBuildingCode(nextBuildingCode);
@@ -1989,8 +2071,49 @@ export default function Home() {
                   type="button"
                   variant="outline"
                   size="icon"
+                  onClick={newProject}
+                  aria-label="New project (reset name and inputs)"
+                  title="New project"
+                >
+                  <FilePlus2 />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={exportProject}
+                  aria-label="Export project to a .footing file"
+                  title="Export .footing"
+                >
+                  <Download />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => fileInputRef.current?.click()}
+                  aria-label="Import a .footing project file"
+                  title="Import .footing"
+                >
+                  <Upload />
+                </Button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".footing,.json,application/json"
+                  className="hidden"
+                  onChange={(event) => {
+                    void importProject(event.target.files?.[0]);
+                    event.target.value = "";
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
                   onClick={resetInputs}
                   aria-label="Reset all inputs to defaults"
+                  title="Reset inputs"
                 >
                   <RotateCcw />
                 </Button>
@@ -2782,6 +2905,20 @@ export default function Home() {
                   }
                   tooltip="Serviceability rotation limit about the footing Z axis."
                 />
+                <NumField
+                  id="minimumContactRatio"
+                  label="Min. soil contact"
+                  unit={<MathUnit unit="%" />}
+                  value={materials.minimumContactRatio}
+                  min={0}
+                  max={100}
+                  step={5}
+                  displayDigits={0}
+                  onChange={(value) =>
+                    updateMaterials("minimumContactRatio", value)
+                  }
+                  tooltip="Minimum soil-contact area as a percent of the footing base. 0 allows any partial contact (warning only); 100 requires full contact (resultant in the kern). Partial contact below this value fails the soil-contact check."
+                />
               </CardContent>
             </Card>
 
@@ -3240,7 +3377,7 @@ export default function Home() {
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
                         <div>
 	                          <div className="text-muted-foreground">
-                              {isUpliftCheck ? "Minimum pressure" : "Demand"}
+                              {isUpliftCheck ? "Contact area %" : "Demand"}
                             </div>
 	                          <div className="font-medium">
 	                            <CheckValue
@@ -3257,10 +3394,7 @@ export default function Home() {
 	                          <div className="font-medium">
                               {isUpliftCheck ? (
                                 <span>
-                                  <MathText>{`qmin >= 0 ${displayUnit(
-                                    item.unit,
-                                    units
-                                  )}`}</MathText>
+                                  <MathText>Full preferred; no uplift</MathText>
                                 </span>
                               ) : (
                                 <CheckValue
@@ -3327,6 +3461,7 @@ export default function Home() {
 	                          <TableHead className="text-right">
 	                            <FormulaValue tex="N" />
 	                          </TableHead>
+                          <TableHead className="border-l text-right">Contact</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -3357,11 +3492,16 @@ export default function Home() {
 	                                  units={units}
 	                                />
 	                              </TableCell>
+                              <TableCell className="border-l text-right text-xs text-muted-foreground">
+                                {row.contactState === "full"
+                                  ? "Full"
+                                  : `${row.contactPercent.toFixed(0)}% (${row.contactState})`}
+                              </TableCell>
                             </TableRow>
                           ))
                         ) : (
                           <TableRow>
-                            <TableCell colSpan={4} className="text-muted-foreground">
+                            <TableCell colSpan={5} className="text-muted-foreground">
                               No service cases.
                             </TableCell>
                           </TableRow>
@@ -4013,6 +4153,23 @@ export default function Home() {
               </CardHeader>
               <CardContent>
                 <FootingModel3d geometry={geometry} />
+              </CardContent>
+            </Card>
+
+            <Card id="card-contact-plan" size="sm" className="mt-4">
+              <CardHeader className="gap-0.5">
+                <CardTitle>Soil-contact plan</CardTitle>
+                <CardDescription className="text-[11px]/snug">
+                  Compression-only bearing patch for the least-contact service
+                  case.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ContactPlan
+                  geometry={siGeometryForPlan}
+                  bearingCase={contactPlanCase}
+                  formatPressure={formatPressure}
+                />
               </CardContent>
             </Card>
           </aside>

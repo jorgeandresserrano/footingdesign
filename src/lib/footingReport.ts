@@ -714,6 +714,7 @@ function serviceBearingCalculations(state: FootingReportState) {
         String.raw`N = P + W_f + \eta_{s,svc}W_s = ${q(loadCase.P, "kN")} + ${q(state.results.summary.footingSelfWeight, "kN")} + ${num(soilFactors.service, 0)}${q(state.results.summary.soilOverburdenWeight, "kN")} = ${q(row?.axial ?? 0, "kN")}`,
         String.raw`q = \frac{N}{A} \pm \frac{M_x^*}{S_x} \pm \frac{M_z^*}{S_z}`,
         String.raw`q_{max} = ${q(row?.maxBearing ?? 0, "kPa")};\quad q_{min} = ${q(row?.minBearing ?? 0, "kPa")};\quad A=${q(data.area, "m^2")},\;S_x=${q(data.sx, "m^3")},\;S_z=${q(data.sz, "m^3")}`,
+        String.raw`\text{Soil contact: ${row?.contactState ?? "full"};}\ ${num(row?.contactPercent ?? 100, 1)}\%\ \text{of base;}\ \Delta P = ${(row?.forceResidual ?? 0).toExponential(2)}\ \text{kN},\ \Delta M = ${(row?.momentResidual ?? 0).toExponential(2)}\ \text{kN·m}\ (${row?.iterations ?? 0}\ \text{iterations})`,
       ]);
     })
     .join("");
