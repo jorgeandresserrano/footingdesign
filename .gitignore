@@ -6,3 +6,6 @@ out/
 *.log
 .env*
 !.env.example
+
+# Large reference standard kept locally, not in git (exceeds GitHub 100MB limit)
+references/CSA A23.3-24.pdf
