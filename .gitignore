@@ -9,3 +9,7 @@ out/
 
 # Large reference standard kept locally, not in git (exceeds GitHub 100MB limit)
 references/CSA A23.3-24.pdf
+
+# Local build artifacts
+tsconfig.tsbuildinfo
+.claude/

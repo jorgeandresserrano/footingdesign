@@ -116,6 +116,23 @@ export interface DesignCheck {
   };
 }
 
+// The subset of a load-case result needed to draw the soil-contact plan. Both
+// BearingCaseResult (service) and StructuralCaseResult (strength) satisfy it, so
+// the plan can render either. Pressures and the plane are the gross soil
+// reaction (what bears on and lifts off the soil), in SI units.
+export interface ContactPlanCase {
+  id: string;
+  name: string;
+  qx: number;
+  qz: number;
+  eccentricityX: number | null;
+  eccentricityZ: number | null;
+  contactState: ContactState;
+  contactPercent: number;
+  contactPolygon: [number, number][];
+  cornerPressures: number[];
+}
+
 export interface BearingCaseResult {
   id: string;
   name: string;
@@ -159,6 +176,14 @@ export interface StructuralCaseResult {
   punchingCapacity: number;
   contactState: ContactState;
   contactPercent: number;
+  // Gross soil-contact-plan data (mirrors BearingCaseResult) so the plan can
+  // draw strength cases too. Based on the factored gross soil reaction.
+  qx: number;
+  qz: number;
+  eccentricityX: number | null;
+  eccentricityZ: number | null;
+  contactPolygon: [number, number][];
+  cornerPressures: number[];
   forceResidual: number;
   momentResidual: number;
   iterations: number;
@@ -1655,6 +1680,23 @@ export function calculateFootingDesign({
       punchingCapacity: row.punching.capacity,
       contactState: row.field.contact.state,
       contactPercent: row.field.contact.percent,
+      qx: row.field.qx,
+      qz: row.field.qz,
+      eccentricityX:
+        Math.abs(row.field.grossAxial) > EPS
+          ? row.field.grossMz / row.field.grossAxial
+          : null,
+      eccentricityZ:
+        Math.abs(row.field.grossAxial) > EPS
+          ? row.field.grossMx / row.field.grossAxial
+          : null,
+      contactPolygon: row.field.polygon,
+      cornerPressures: [
+        [-geometry.footingLength / 2, -geometry.footingWidth / 2],
+        [geometry.footingLength / 2, -geometry.footingWidth / 2],
+        [geometry.footingLength / 2, geometry.footingWidth / 2],
+        [-geometry.footingLength / 2, geometry.footingWidth / 2],
+      ].map(([x, z]) => grossSoilPressureAt(row.field, x, z)),
       forceResidual: row.field.contact.forceResidual,
       momentResidual: row.field.contact.momentResidual,
       iterations: row.field.contact.iterations,

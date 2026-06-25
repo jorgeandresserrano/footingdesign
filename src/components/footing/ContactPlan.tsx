@@ -1,21 +1,34 @@
 "use client";
 
-import type { BearingCaseResult } from "@/lib/footingEngine";
+import { useRef, useState } from "react";
+
+import type { ContactPlanCase } from "@/lib/footingEngine";
 import type { FootingGeometry } from "@/components/footing/FootingModel3d";
 
 interface Props {
   geometry: FootingGeometry;
-  bearingCase: BearingCaseResult | null;
+  planCase: ContactPlanCase | null;
   formatPressure: (kPa: number) => string;
 }
 
 const PAD = 8;
 const DRAW = 210;
 
-// Soil-contact pressure plan for a single service load case. Shows the footing
-// in plan with the compression-only contact patch shaded by a true linear
-// pressure gradient, the lifted region hatched, and the load resultant marked.
-export function ContactPlan({ geometry, bearingCase, formatPressure }: Props) {
+// Soil-contact pressure plan for a single load case (service or strength). Shows
+// the footing in plan with the compression-only contact patch shaded by a true
+// linear pressure gradient, the lifted region hatched, and the load resultant
+// marked. Hovering reports the soil pressure under the cursor.
+export function ContactPlan({ geometry, planCase, formatPressure }: Props) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [hover, setHover] = useState<{
+    left: number;
+    top: number;
+    q: number;
+    lifted: boolean;
+    flipX: boolean;
+    flipY: boolean;
+  } | null>(null);
+
   const L = Math.max(geometry.footingLength, 1e-6);
   const B = Math.max(geometry.footingWidth, 1e-6);
   const scale = DRAW / Math.max(L, B);
@@ -26,7 +39,7 @@ export function ContactPlan({ geometry, bearingCase, formatPressure }: Props) {
   const sx = (x: number) => PAD + (x + L / 2) * scale;
   const sy = (z: number) => PAD + (z + B / 2) * scale;
 
-  if (!bearingCase) {
+  if (!planCase) {
     return (
       <p className="text-[11px] text-muted-foreground">
         Add a service load case to view its soil-contact plan.
@@ -35,7 +48,7 @@ export function ContactPlan({ geometry, bearingCase, formatPressure }: Props) {
   }
 
   const { contactState, contactPercent, contactPolygon, cornerPressures, qx, qz } =
-    bearingCase;
+    planCase;
 
   // Footing corners and their plane ordinate (qx*x + qz*z) to orient the gradient.
   const corners: [number, number][] = [
@@ -60,16 +73,61 @@ export function ContactPlan({ geometry, bearingCase, formatPressure }: Props) {
   const peak = Math.max(...cornerPressures, 0);
   const minP = Math.min(...cornerPressures);
 
-  const gradId = `contact-grad-${bearingCase.id}`;
-  const hatchId = `lift-hatch-${bearingCase.id}`;
+  // Pressure plane q = q0 + qx*x + qz*z. The peak corner is always in
+  // compression, so its (unclamped) pressure recovers the intercept q0.
+  const q0 =
+    cornerPressures[hi] - qx * corners[hi][0] - qz * corners[hi][1];
+
+  // Map the cursor back into footing coordinates and read off the pressure,
+  // clamped to zero in the lifted region for partial/zero contact.
+  const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const sxv = ((e.clientX - rect.left) / rect.width) * vbW;
+    const syv = ((e.clientY - rect.top) / rect.height) * vbH;
+    const x = (sxv - PAD) / scale - L / 2;
+    const z = (syv - PAD) / scale - B / 2;
+    const eps = 1e-6;
+    if (
+      x < -L / 2 - eps ||
+      x > L / 2 + eps ||
+      z < -B / 2 - eps ||
+      z > B / 2 + eps
+    ) {
+      setHover(null);
+      return;
+    }
+    const raw = q0 + qx * x + qz * z;
+    const lifted = contactState !== "full" && raw <= 1e-9;
+    const localX = e.clientX - rect.left;
+    const localY = e.clientY - rect.top;
+    setHover({
+      left: localX,
+      top: localY,
+      q: Math.max(0, raw),
+      lifted,
+      // Flip the tooltip toward the inside so it never clips the card edge:
+      // left of the cursor near the right edge, below it near the top.
+      flipX: localX > rect.width * 0.7,
+      flipY: localY < rect.height * 0.18,
+    });
+  };
+
+  const gradId = `contact-grad-${planCase.id}`;
+  const hatchId = `lift-hatch-${planCase.id}`;
 
   return (
     <div className="space-y-2">
+      <div className="relative">
       <svg
+        ref={svgRef}
         viewBox={`0 0 ${vbW.toFixed(1)} ${vbH.toFixed(1)}`}
-        className="w-full"
+        className="w-full cursor-crosshair"
         role="img"
-        aria-label={`Soil-contact pressure plan for ${bearingCase.name}`}
+        aria-label={`Soil-contact pressure plan for ${planCase.name}`}
+        onMouseMove={handleMove}
+        onMouseLeave={() => setHover(null)}
       >
         <defs>
           <linearGradient
@@ -130,11 +188,11 @@ export function ContactPlan({ geometry, bearingCase, formatPressure }: Props) {
         />
 
         {/* Load resultant location (eccentricity from footing center). */}
-        {bearingCase.eccentricityX !== null && bearingCase.eccentricityZ !== null ? (
+        {planCase.eccentricityX !== null && planCase.eccentricityZ !== null ? (
           <g>
             <circle
-              cx={sx(bearingCase.eccentricityX)}
-              cy={sy(bearingCase.eccentricityZ)}
+              cx={sx(planCase.eccentricityX)}
+              cy={sy(planCase.eccentricityZ)}
               r="3.2"
               fill="#b91c1c"
               stroke="#fff"
@@ -156,9 +214,25 @@ export function ContactPlan({ geometry, bearingCase, formatPressure }: Props) {
         ) : null}
       </svg>
 
+        {hover ? (
+          <div
+            className="pointer-events-none absolute z-10 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[10px] font-medium text-background shadow"
+            style={{
+              left: hover.left,
+              top: hover.top,
+              transform: `translate(${
+                hover.flipX ? "calc(-100% - 10px)" : "10px"
+              }, ${hover.flipY ? "10px" : "calc(-100% - 6px)"})`,
+            }}
+          >
+            {hover.lifted ? "lifted · 0" : formatPressure(hover.q)}
+          </div>
+        ) : null}
+      </div>
+
       <div className="space-y-1 text-[11px] text-muted-foreground">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-          <span className="font-medium text-foreground">{bearingCase.name}</span>
+          <span className="font-medium text-foreground">{planCase.name}</span>
           <span className="capitalize">contact: {contactState}</span>
           <span>{contactPercent.toFixed(1)}% of base</span>
         </div>

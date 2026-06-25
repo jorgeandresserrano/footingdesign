@@ -42,7 +42,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -70,6 +72,7 @@ import {
   calculateFootingDesign,
   type CheckStatus,
   type CheckUnit,
+  type ContactPlanCase,
   type DesignCheck,
   type ReinforcementInputs as EngineReinforcementInputs,
   type SoilTreatmentMode,
@@ -467,6 +470,16 @@ type LoadCaseColumn =
 type CellPosition = { row: number; column: number };
 type SelectionRange = { start: CellPosition; end: CellPosition };
 type EditingCell = CellPosition | null;
+
+// A soil-contact-plan case as offered in the selector: a renderable case plus
+// its load-combination kind and which criticality marks it carries.
+type ContactPlanOption = ContactPlanCase & {
+  kind: "service" | "strength";
+  key: string;
+  peak: number;
+  bearingCritical: boolean;
+  upliftCritical: boolean;
+};
 
 const DEFAULT_GEOMETRY_SI: FootingGeometry = {
   footingLength: 2.4,
@@ -1466,14 +1479,75 @@ export default function Home() {
         : governing,
     null
   );
-  // Case with the least soil contact: the most informative one to draw.
-  const contactPlanCase = designResults.serviceBearing.reduce<
-    (typeof designResults.serviceBearing)[number] | null
-  >(
-    (worst, result) =>
-      !worst || result.contactPercent < worst.contactPercent ? result : worst,
-    null
-  );
+  // Unified list of selectable contact-plan cases (service + strength), each
+  // flagged with whether it is the group's most critical for bearing (highest
+  // peak soil pressure) or for uplift (least soil contact). The plan defaults to
+  // the service case with the worst uplift; the user can pick any case.
+  const contactPlanOptions = useMemo<ContactPlanOption[]>(() => {
+    const toOption =
+      (kind: ContactPlanOption["kind"]) =>
+      (c: ContactPlanCase): ContactPlanOption => ({
+        id: c.id,
+        name: c.name,
+        qx: c.qx,
+        qz: c.qz,
+        eccentricityX: c.eccentricityX,
+        eccentricityZ: c.eccentricityZ,
+        contactState: c.contactState,
+        contactPercent: c.contactPercent,
+        contactPolygon: c.contactPolygon,
+        cornerPressures: c.cornerPressures,
+        kind,
+        key: `${kind}:${c.id}`,
+        peak: Math.max(...c.cornerPressures, 0),
+        bearingCritical: false,
+        upliftCritical: false,
+      });
+    const service = designResults.serviceBearing.map(toOption("service"));
+    const strength = designResults.strengthCases.map(toOption("strength"));
+    for (const group of [service, strength]) {
+      if (group.length === 0) continue;
+      // Most critical for bearing: the highest peak soil pressure.
+      let bearing = 0;
+      group.forEach((o, i) => {
+        if (o.peak > group[bearing].peak) bearing = i;
+      });
+      group[bearing].bearingCritical = true;
+      // Most critical for uplift: the least soil contact — only meaningful when
+      // some case actually lifts off (contact < 100%).
+      if (group.some((o) => o.contactPercent < 100 - 1e-6)) {
+        let uplift = 0;
+        group.forEach((o, i) => {
+          if (o.contactPercent < group[uplift].contactPercent) uplift = i;
+        });
+        group[uplift].upliftCritical = true;
+      }
+    }
+    return [...service, ...strength];
+  }, [designResults.serviceBearing, designResults.strengthCases]);
+
+  // Default: the service case with the worst uplift, else worst service bearing.
+  const defaultContactPlanKey = useMemo(() => {
+    const service = contactPlanOptions.filter((o) => o.kind === "service");
+    return (
+      service.find((o) => o.upliftCritical)?.key ??
+      service.find((o) => o.bearingCritical)?.key ??
+      contactPlanOptions[0]?.key ??
+      null
+    );
+  }, [contactPlanOptions]);
+
+  const [selectedContactPlanKey, setSelectedContactPlanKey] = useState<
+    string | null
+  >(null);
+  // Honor the user's pick while it still exists; otherwise fall back to default.
+  const activeContactPlanKey =
+    selectedContactPlanKey &&
+    contactPlanOptions.some((o) => o.key === selectedContactPlanKey)
+      ? selectedContactPlanKey
+      : defaultContactPlanKey;
+  const contactPlanCase =
+    contactPlanOptions.find((o) => o.key === activeContactPlanKey) ?? null;
   const formatPressure = (kPa: number) =>
     `${formatDisplay(convertedValue(kPa, "kPa", units), bearingUnit)} ${bearingUnit}`;
   // The engine runs in SI, so the contact polygon and corner pressures are in
@@ -4189,16 +4263,80 @@ export default function Home() {
             <Card id="card-contact-plan" size="sm" className="mt-4">
               <CardHeader className="gap-0.5">
                 <CardTitle>Soil-contact plan</CardTitle>
-                {contactPlanCase && (
-                  <CardDescription className="text-[11px]/snug">
-                    Load case: {contactPlanCase.name}
-                  </CardDescription>
-                )}
+                <CardDescription className="text-[11px]/snug">
+                  Load case
+                </CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-2">
+                {contactPlanOptions.length > 0 && (
+                  <Select
+                    value={activeContactPlanKey ?? undefined}
+                    onValueChange={setSelectedContactPlanKey}
+                  >
+                    <SelectTrigger
+                      size="sm"
+                      className="h-8 w-full justify-between px-2 text-xs"
+                      aria-label="Soil-contact plan load case"
+                    >
+                      <SelectValue>
+                        {() => {
+                          const o = contactPlanOptions.find(
+                            (it) => it.key === activeContactPlanKey
+                          );
+                          return o ? (
+                            <span className="flex items-center gap-1.5">
+                              <span>{o.name}</span>
+                              <span className="text-muted-foreground">
+                                · {o.kind}
+                              </span>
+                            </span>
+                          ) : (
+                            "Select load case"
+                          );
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(["service", "strength"] as const).map((kind) => {
+                        const group = contactPlanOptions.filter(
+                          (o) => o.kind === kind
+                        );
+                        if (group.length === 0) return null;
+                        return (
+                          <SelectGroup key={kind}>
+                            <SelectLabel className="capitalize">
+                              {kind}
+                            </SelectLabel>
+                            {group.map((o) => (
+                              <SelectItem key={o.key} value={o.key}>
+                                <span className="flex-1">{o.name}</span>
+                                {o.bearingCritical && (
+                                  <span
+                                    title="Most critical for bearing"
+                                    className="shrink-0 rounded-sm bg-amber-400/20 px-1 text-[9px] font-semibold uppercase tracking-wide text-amber-300"
+                                  >
+                                    bearing
+                                  </span>
+                                )}
+                                {o.upliftCritical && (
+                                  <span
+                                    title="Most critical for uplift"
+                                    className="shrink-0 rounded-sm bg-sky-400/20 px-1 text-[9px] font-semibold uppercase tracking-wide text-sky-300"
+                                  >
+                                    uplift
+                                  </span>
+                                )}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                )}
                 <ContactPlan
                   geometry={siGeometryForPlan}
-                  bearingCase={contactPlanCase}
+                  planCase={contactPlanCase}
                   formatPressure={formatPressure}
                 />
               </CardContent>
