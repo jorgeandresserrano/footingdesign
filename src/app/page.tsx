@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   Copy,
   Download,
-  FilePlus2,
   Info,
   MinusCircle,
   Pencil,
@@ -438,12 +437,12 @@ const DEFAULT_GEOMETRY_SI: FootingGeometry = {
   footingLength: 2.4,
   footingWidth: 2.4,
   footingThickness: 0.6,
-  soilCoverDepth: 1.2,
+  soilCoverDepth: 0.6,
   frostDepth: 1.2,
-  groundwaterDepth: 3,
+  groundwaterDepth: 1.5,
   pedestalLength: 0.6,
   pedestalWidth: 0.6,
-  pedestalHeight: 2,
+  pedestalHeight: 1.6,
   pedestalOffsetX: 0,
   pedestalOffsetZ: 0,
 };
@@ -452,7 +451,7 @@ const DEFAULT_MATERIALS_SI: MaterialInputs = {
   concreteStrength: 30,
   concreteElasticModulus: concreteElasticModulusFromStrength(30, "SI"),
   rebarYield: 420,
-  concreteUnitWeight: 24,
+  concreteUnitWeight: 23.5,
   soilUnitWeight: 18,
   saturatedSoilUnitWeight: 20,
   waterUnitWeight: 9.81,
@@ -466,13 +465,13 @@ const DEFAULT_MATERIALS_SI: MaterialInputs = {
   allowableSettlement: 25,
   allowableRotationX: 0.003,
   allowableRotationZ: 0.003,
-  minimumContactRatio: 0,
+  minimumContactRatio: 100,
 };
 
 const DEFAULT_REINFORCEMENT_SI: ReinforcementInputs = {
-  barDiameterX: 19.5,
+  barDiameterX: 25,
   barSpacingX: 200,
-  barDiameterZ: 19.5,
+  barDiameterZ: 25,
   barSpacingZ: 200,
 };
 
@@ -1319,15 +1318,6 @@ export default function Home() {
   const subgradeReactionUnit = units === "SI" ? "(kN/m)/m²" : "pci";
   const forceUnit = units === "SI" ? "kN" : "kip";
   const momentUnit = units === "SI" ? "kN·m" : "kip·ft";
-  const lengthDisplayDigits = displayDigitsForUnit(lengthUnit, displayPrecision);
-  const strengthDisplayDigits = displayDigitsForUnit(strengthUnit, displayPrecision);
-  const unitWeightDisplayDigits = displayDigitsForUnit(unitWeightUnit, displayPrecision);
-  const coverDisplayDigits = displayDigitsForUnit(coverUnit, displayPrecision);
-  const bearingDisplayDigits = displayDigitsForUnit(bearingUnit, displayPrecision);
-  const subgradeDisplayDigits = displayDigitsForUnit(
-    subgradeReactionUnit,
-    displayPrecision
-  );
   const pedestalOffsetX = finiteNumber(geometry.pedestalOffsetX);
   const pedestalOffsetZ = finiteNumber(geometry.pedestalOffsetZ);
   const pedestalOffsetLimitX = pedestalOffsetLimit(
@@ -1905,11 +1895,6 @@ export default function Home() {
     setStrengthLoadCases(defaultStrengthLoadCases(units));
   };
 
-  const newProject = () => {
-    setModelName("Untitled footing");
-    resetInputs();
-  };
-
   const exportProject = () => {
     const state: FootingProjectState = {
       modelName,
@@ -2035,7 +2020,7 @@ export default function Home() {
                   Isolated Footing Design
                 </h1>
                 <p className="text-sm text-muted-foreground">
-                  Concrete isolated footing design workspace.
+                  Concrete isolated footing design.
                 </p>
               </div>
             </div>
@@ -2066,16 +2051,6 @@ export default function Home() {
                   onClick={() => setPrecisionOpen(true)}
                 >
                   Precision
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  onClick={newProject}
-                  aria-label="New project (reset name and inputs)"
-                  title="New project"
-                >
-                  <FilePlus2 />
                 </Button>
                 <Button
                   type="button"
@@ -2528,7 +2503,7 @@ export default function Home() {
               <CardHeader>
                 <CardTitle>Geometry</CardTitle>
                 <CardDescription>
-                  Footing slab and pedestal footprint dimensions.
+                  Footing and pedestal footprint dimensions.
                 </CardDescription>
               </CardHeader>
               <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -2538,7 +2513,6 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.footingLength}
                   min={0.05}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("footingLength", value)}
                   tooltip="Plan dimension of footing in model X direction."
                 />
@@ -2548,7 +2522,6 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.footingWidth}
                   min={0.05}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("footingWidth", value)}
                   tooltip="Plan dimension of footing in model Z direction."
                 />
@@ -2558,7 +2531,6 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.footingThickness}
                   min={0.05}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) =>
                     updateGeometry("footingThickness", value)
                   }
@@ -2570,7 +2542,6 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.soilCoverDepth}
                   min={0}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("soilCoverDepth", value)}
                   tooltip="Depth from finished grade to the top of footing. Soil over the pedestal footprint is excluded from overburden."
                 />
@@ -2580,7 +2551,6 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.frostDepth}
                   min={0}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("frostDepth", value)}
                   tooltip="Local frost depth used for the footing bottom depth check."
                 />
@@ -2590,7 +2560,6 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.groundwaterDepth}
                   min={0}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("groundwaterDepth", value)}
                   tooltip="Depth from finished grade to groundwater. Concrete and soil weights below this depth use buoyant unit weights."
                 />
@@ -2600,7 +2569,6 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.pedestalLength}
                   min={0.05}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("pedestalLength", value)}
                   tooltip="Pedestal dimension parallel to footing length."
                 />
@@ -2610,7 +2578,6 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.pedestalWidth}
                   min={0.05}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("pedestalWidth", value)}
                   tooltip="Pedestal dimension parallel to footing width."
                 />
@@ -2620,7 +2587,6 @@ export default function Home() {
                   unit={<MathUnit unit={lengthUnit} />}
                   value={geometry.pedestalHeight}
                   min={0.05}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("pedestalHeight", value)}
                   tooltip="Height from footing top to load application. Pedestal design is outside this footing-only scope."
                 />
@@ -2631,7 +2597,6 @@ export default function Home() {
                   value={pedestalOffsetX}
                   min={-pedestalOffsetLimitX}
                   max={pedestalOffsetLimitX}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("pedestalOffsetX", value)}
                   tooltip="Offset from footing center. Positive X follows the red plan axis."
                 />
@@ -2642,7 +2607,6 @@ export default function Home() {
                   value={pedestalOffsetZ}
                   min={-pedestalOffsetLimitZ}
                   max={pedestalOffsetLimitZ}
-                  displayDigits={lengthDisplayDigits}
                   onChange={(value) => updateGeometry("pedestalOffsetZ", value)}
                   tooltip="Offset from footing center. Positive Z follows the blue plan axis."
                 />
@@ -2663,7 +2627,6 @@ export default function Home() {
                   unit={<MathUnit unit={strengthUnit} />}
                   value={materials.concreteStrength}
                   min={0}
-                  displayDigits={strengthDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("concreteStrength", value)
                   }
@@ -2683,7 +2646,6 @@ export default function Home() {
                     unit={<MathUnit unit={strengthUnit} />}
                     value={materials.concreteElasticModulus}
                     min={0}
-                    displayDigits={strengthDisplayDigits}
                     onChange={(value) =>
                       updateMaterials("concreteElasticModulus", value)
                     }
@@ -2723,7 +2685,6 @@ export default function Home() {
                   unit={<MathUnit unit={strengthUnit} />}
                   value={materials.rebarYield}
                   min={0}
-                  displayDigits={strengthDisplayDigits}
                   onChange={(value) => updateMaterials("rebarYield", value)}
                   tooltip="Specified yield strength for footing reinforcement."
                 />
@@ -2733,7 +2694,6 @@ export default function Home() {
                   unit={<MathUnit unit={unitWeightUnit} />}
                   value={materials.concreteUnitWeight}
                   min={0}
-                  displayDigits={unitWeightDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("concreteUnitWeight", value)
                   }
@@ -2745,7 +2705,6 @@ export default function Home() {
                   unit={<MathUnit unit={unitWeightUnit} />}
                   value={materials.soilUnitWeight}
                   min={0}
-                  displayDigits={unitWeightDisplayDigits}
                   onChange={(value) => updateMaterials("soilUnitWeight", value)}
                   tooltip="Soil unit weight used for overburden above the footing outside the pedestal footprint."
                 />
@@ -2755,7 +2714,6 @@ export default function Home() {
                   unit={<MathUnit unit={unitWeightUnit} />}
                   value={materials.saturatedSoilUnitWeight}
                   min={0}
-                  displayDigits={unitWeightDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("saturatedSoilUnitWeight", value)
                   }
@@ -2767,7 +2725,6 @@ export default function Home() {
                   unit={<MathUnit unit={unitWeightUnit} />}
                   value={materials.waterUnitWeight}
                   min={0}
-                  displayDigits={unitWeightDisplayDigits}
                   onChange={(value) => updateMaterials("waterUnitWeight", value)}
                   tooltip="Water unit weight subtracted from saturated weights below groundwater."
                 />
@@ -2777,7 +2734,6 @@ export default function Home() {
                   unit={<MathUnit unit={coverUnit} />}
                   value={materials.clearCover}
                   min={0}
-                  displayDigits={coverDisplayDigits}
                   onChange={(value) => updateMaterials("clearCover", value)}
                   tooltip="Clear cover to footing reinforcement."
                 />
@@ -2787,7 +2743,6 @@ export default function Home() {
                   unit={<MathUnit unit={bearingUnit} />}
                   value={materials.allowableBearing}
                   min={0}
-                  displayDigits={bearingDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("allowableBearing", value)
                   }
@@ -2799,7 +2754,6 @@ export default function Home() {
                   unit={<MathUnit unit={bearingUnit} />}
                   value={materials.ultimateBearing}
                   min={0}
-                  displayDigits={bearingDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("ultimateBearing", value)
                   }
@@ -2812,7 +2766,6 @@ export default function Home() {
                   value={materials.subgradeReactionModulus}
                   min={0}
                   step={1}
-                  displayDigits={subgradeDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("subgradeReactionModulus", value)
                   }
@@ -2837,7 +2790,6 @@ export default function Home() {
                   min={0}
                   max={2}
                   step={0.01}
-                  displayDigits={2}
                   onChange={(value) =>
                     updateMaterials("soilFrictionCoefficient", value)
                   }
@@ -2849,7 +2801,6 @@ export default function Home() {
                   value={materials.slidingSafetyFactor}
                   min={0.01}
                   step={0.01}
-                  displayDigits={2}
                   onChange={(value) =>
                     updateMaterials("slidingSafetyFactor", value)
                   }
@@ -2861,7 +2812,6 @@ export default function Home() {
                   value={materials.overturningSafetyFactor}
                   min={0.01}
                   step={0.01}
-                  displayDigits={2}
                   onChange={(value) =>
                     updateMaterials("overturningSafetyFactor", value)
                   }
@@ -2873,7 +2823,6 @@ export default function Home() {
                   unit={<MathUnit unit={coverUnit} />}
                   value={materials.allowableSettlement}
                   min={0}
-                  displayDigits={coverDisplayDigits}
                   onChange={(value) =>
                     updateMaterials("allowableSettlement", value)
                   }
@@ -2886,7 +2835,6 @@ export default function Home() {
                   value={materials.allowableRotationX}
                   min={0}
                   step={0.0001}
-                  displayDigits={4}
                   onChange={(value) =>
                     updateMaterials("allowableRotationX", value)
                   }
@@ -2899,7 +2847,6 @@ export default function Home() {
                   value={materials.allowableRotationZ}
                   min={0}
                   step={0.0001}
-                  displayDigits={4}
                   onChange={(value) =>
                     updateMaterials("allowableRotationZ", value)
                   }
@@ -2913,7 +2860,6 @@ export default function Home() {
                   min={0}
                   max={100}
                   step={5}
-                  displayDigits={0}
                   onChange={(value) =>
                     updateMaterials("minimumContactRatio", value)
                   }
@@ -2947,7 +2893,6 @@ export default function Home() {
                     unit={<MathUnit unit={coverUnit} />}
                     value={reinforcement.barSpacingX}
                     min={0.1}
-                    displayDigits={coverDisplayDigits}
                     onChange={(value) =>
                       updateReinforcement("barSpacingX", value)
                     }
@@ -2969,7 +2914,6 @@ export default function Home() {
                     unit={<MathUnit unit={coverUnit} />}
                     value={reinforcement.barSpacingZ}
                     min={0.1}
-                    displayDigits={coverDisplayDigits}
                     onChange={(value) =>
                       updateReinforcement("barSpacingZ", value)
                     }
@@ -3246,14 +3190,6 @@ export default function Home() {
 	                          digits={0}
 	                        />
 	                      </div>
-	                    </div>
-	                  </div>
-	                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">
-	                    <div className="text-xs text-muted-foreground">
-	                      Concrete design family
-	                    </div>
-	                    <div className="mt-1 font-medium">
-	                      {designResults.codeBasis.concreteFamily}
 	                    </div>
 	                  </div>
 	                  <div className="rounded-md border bg-slate-50 p-3 dark:bg-slate-900">

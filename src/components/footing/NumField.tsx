@@ -10,6 +10,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
+// Show the stored value as-is, stripping any trailing zeros so a default of
+// 2.4 reads "2.4" rather than "2.400". A small rounding guard removes
+// floating-point noise without imposing the results-precision setting on
+// inputs — the number of decimals shown is entirely up to the user.
+function formatInputValue(value: number): string {
+  return String(Math.round(value * 1e6) / 1e6);
+}
+
 interface Props {
   id: string;
   label: React.ReactNode;
@@ -19,7 +27,6 @@ interface Props {
   step?: number;
   min?: number;
   max?: number;
-  displayDigits?: number;
   tooltip?: React.ReactNode;
 }
 
@@ -32,7 +39,6 @@ export function NumField({
   step = 0.01,
   min = 0,
   max,
-  displayDigits,
   tooltip,
 }: Props) {
   const [focused, setFocused] = useState(false);
@@ -85,9 +91,7 @@ export function NumField({
             focused
               ? draft
               : Number.isFinite(value)
-              ? displayDigits === undefined
-                ? String(value)
-                : value.toFixed(displayDigits)
+              ? formatInputValue(value)
               : ""
           }
           onFocus={() => {

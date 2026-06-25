@@ -1,9 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { useThree } from "@react-three/fiber";
 import {
-  ContactShadows,
   Grid,
   OrbitControls,
   PerspectiveCamera,
@@ -13,6 +13,16 @@ import {
   Quaternion,
   Vector3,
 } from "three";
+
+const SOIL_PLANES = [
+  { key: "ground", label: "Ground surface", color: "#8b5a2b", opacity: 0.35 },
+  { key: "frost", label: "Frost depth", color: "#38bdf8", opacity: 0.3 },
+  { key: "groundwater", label: "Groundwater", color: "#1d4ed8", opacity: 0.3 },
+] as const;
+
+type SoilPlaneKey = (typeof SOIL_PLANES)[number]["key"];
+
+type PlaneVisibility = Record<SoilPlaneKey, boolean>;
 
 const CAMERA_FOV = 35;
 const CAMERA_DIRECTION = [1, 0.75, 1] as const;
@@ -146,11 +156,21 @@ function MomentArrow({
   );
 }
 
-function FootingScene({ geometry }: { geometry: FootingGeometry }) {
+function FootingScene({
+  geometry,
+  planeVisibility,
+}: {
+  geometry: FootingGeometry;
+  planeVisibility: PlaneVisibility;
+}) {
   const { size } = useThree();
   const footingLength = clampDimension(geometry.footingLength);
   const footingWidth = clampDimension(geometry.footingWidth);
   const footingThickness = clampDimension(geometry.footingThickness);
+  const soilCoverDepth = Math.max(finiteNumber(geometry.soilCoverDepth), 0);
+  const frostDepth = Math.max(finiteNumber(geometry.frostDepth), 0);
+  const groundwaterDepth = Math.max(finiteNumber(geometry.groundwaterDepth), 0);
+  const groundSurfaceY = footingThickness / 2 + soilCoverDepth;
   const pedestalLength = clampDimension(geometry.pedestalLength);
   const pedestalWidth = clampDimension(geometry.pedestalWidth);
   const pedestalHeight = clampDimension(geometry.pedestalHeight);
@@ -234,6 +254,38 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
           <meshStandardMaterial color="#d2d0ca" roughness={0.74} />
         </mesh>
       </group>
+      {SOIL_PLANES.filter((plane) => planeVisibility[plane.key]).map(
+        (plane) => {
+          const planeY =
+            plane.key === "ground"
+              ? groundSurfaceY
+              : plane.key === "frost"
+                ? groundSurfaceY - frostDepth
+                : groundSurfaceY - groundwaterDepth;
+          return (
+            <mesh
+              key={plane.key}
+              position={[(minX + maxX) / 2, planeY, (minZ + maxZ) / 2]}
+              rotation={[-Math.PI / 2, 0, 0]}
+            >
+              <planeGeometry
+                args={[
+                  Math.max(modelSpan * 2.4, 6),
+                  Math.max(modelSpan * 2.4, 6),
+                ]}
+              />
+              <meshStandardMaterial
+                color={plane.color}
+                transparent
+                opacity={plane.opacity}
+                roughness={0.95}
+                side={2}
+                depthWrite={false}
+              />
+            </mesh>
+          );
+        }
+      )}
       <group position={[pedestalOffsetX, axisOriginY, pedestalOffsetZ]}>
         <AxisArrow
           color="#dc2626"
@@ -266,7 +318,7 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
           headRadius={momentHeadRadius}
           headLength={momentHeadLength}
           position={[axisLength + momentOffset, 0, 0]}
-          rotation={[0, Math.PI / 2, 0]}
+          rotation={[0, -Math.PI / 2, 0]}
         />
         <MomentArrow
           color="#2563eb"
@@ -275,7 +327,7 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
           headRadius={momentHeadRadius}
           headLength={momentHeadLength}
           position={[0, 0, axisLength + momentOffset]}
-          rotation={[0, 0, 0]}
+          rotation={[0, Math.PI, 0]}
         />
         <MomentArrow
           color="#16a34a"
@@ -299,13 +351,6 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
         fadeDistance={Math.max(modelSpan * 2, 6)}
         fadeStrength={1}
       />
-      <ContactShadows
-        opacity={0.35}
-        scale={Math.max(modelSpan * 1.6, 4)}
-        blur={2}
-        far={Math.max(modelSpan, 3)}
-        position={[0, -footingThickness - 0.02, 0]}
-      />
       <OrbitControls
         makeDefault
         enablePan={false}
@@ -319,14 +364,58 @@ function FootingScene({ geometry }: { geometry: FootingGeometry }) {
 }
 
 export function FootingModel3d({ geometry }: Props) {
+  const [planeVisibility, setPlaneVisibility] = useState<PlaneVisibility>({
+    ground: true,
+    frost: true,
+    groundwater: true,
+  });
+  const [legendOpen, setLegendOpen] = useState(false);
+
   return (
     <div className="relative h-[360px] overflow-hidden rounded-md border bg-slate-100 dark:bg-slate-900 sm:h-[420px]">
       <Canvas
         shadows
       >
         <color attach="background" args={["#f8fafc"]} />
-        <FootingScene geometry={geometry} />
+        <FootingScene geometry={geometry} planeVisibility={planeVisibility} />
       </Canvas>
+      <div className="absolute right-3 top-3 rounded-md border bg-white/85 text-[11px] font-medium shadow-sm backdrop-blur dark:bg-slate-950/75">
+        <button
+          type="button"
+          onClick={() => setLegendOpen((open) => !open)}
+          className="flex w-full items-center gap-2 px-2 py-1.5 text-slate-700 dark:text-slate-200"
+        >
+          <span className="text-slate-400">{legendOpen ? "▾" : "▸"}</span>
+          Soil layers
+        </button>
+        {legendOpen && (
+          <div className="border-t px-2 py-1.5">
+            {SOIL_PLANES.map((plane) => (
+              <label
+                key={plane.key}
+                className="flex cursor-pointer items-center gap-2 py-0.5 text-slate-700 dark:text-slate-200"
+              >
+                <input
+                  type="checkbox"
+                  checked={planeVisibility[plane.key]}
+                  onChange={(event) =>
+                    setPlaneVisibility((prev) => ({
+                      ...prev,
+                      [plane.key]: event.target.checked,
+                    }))
+                  }
+                  className="size-3 accent-current"
+                />
+                <span
+                  className="size-2 rounded-full"
+                  style={{ backgroundColor: plane.color }}
+                />
+                {plane.label}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-md border bg-white/85 px-2 py-1 text-[11px] font-medium shadow-sm backdrop-blur dark:bg-slate-950/75">
         <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
           <span className="size-2 rounded-full bg-red-600" />

@@ -472,7 +472,7 @@ function addSoilWeightMoments(
   const factoredSoilWeight = factor * soil.weight;
   return {
     mx: moments.mx + factoredSoilWeight * soil.centroidZ,
-    mz: moments.mz - factoredSoilWeight * soil.centroidX,
+    mz: moments.mz + factoredSoilWeight * soil.centroidX,
   };
 }
 
@@ -499,7 +499,7 @@ function loadMomentsAtFootingCenter(
 
   return {
     mx: loadCase.Mx + loadCase.Hz * pedestalHeight + loadCase.P * pedestalOffsetZ,
-    mz: loadCase.Mz - loadCase.Hx * pedestalHeight - loadCase.P * pedestalOffsetX,
+    mz: loadCase.Mz + loadCase.Hx * pedestalHeight + loadCase.P * pedestalOffsetX,
   };
 }
 
@@ -1555,7 +1555,7 @@ export function calculateFootingDesign({
     "P is compression-positive and acts at top of pedestal. Hx/Hz add overturning through pedestal height. Mx/Mz act at top of pedestal.",
     `Soil treatment mode is ${soilTreatmentLabel(soilTreatmentMode)}. Soil overburden excludes the pedestal footprint.`,
     "Groundwater reduces effective concrete and soil weights below the entered groundwater depth using buoyant unit weights.",
-    "Service bearing, sliding, overturning, settlement, and rotation include footing self-weight plus applied service soil overburden.",
+    `Service bearing, sliding, overturning, settlement, and rotation include footing self-weight${soilFactors.service > 0 ? " plus applied service soil overburden" : "; soil overburden is excluded"}.`,
     "Strength flexure and shear include factored soil overburden only in Full mode; net structural demand subtracts matching factored distributed concrete and applied soil loads.",
     "Orthogonal bottom bars are treated conservatively as a two-layer mat; both d_x and d_z use the upper-layer effective depth.",
     "Soil pressure uses a rigid-footing linear distribution. When the resultant leaves the kern the reaction is solved as compression-only: tension is not carried, and bearing plus structural demands are integrated over the reduced contact polygon.",
@@ -1683,7 +1683,7 @@ export function calculateFootingDesign({
         "Service load table with linear bearing pressure: q = N/A +/- Mx/Sx +/- Mz/Sz.",
       details: bearingGoverning
         ? [
-            `N = ${round(bearingGoverning.axial)} kN including footing self-weight and applied service soil overburden.`,
+            `N = ${round(bearingGoverning.axial)} kN including footing self-weight${soilFactors.service > 0 ? " and applied service soil overburden" : ""}.`,
             `Mx = ${round(bearingGoverning.mx)} kN-m, Mz = ${round(bearingGoverning.mz)} kN-m at footing center.`,
           ]
         : [],

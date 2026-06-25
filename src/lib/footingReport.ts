@@ -939,9 +939,10 @@ function checkCalc(state: FootingReportState, id: string) {
 }
 
 function detailTex(detail: string) {
-  const normal = detail.match(/^N = ([0-9.,-]+) kN including footing self-weight(?: and (?:applied service )?soil overburden)?\.$/);
+  const normal = detail.match(/^N = ([0-9.,-]+) kN including footing self-weight( and (?:applied service )?soil overburden)?\.$/);
   if (normal) {
-    return String.raw`N = ${formatTexNumberForUnit(normal[1], "kN")}\,\mathrm{kN}\quad\text{including footing self-weight and applied service soil overburden}`;
+    const overburden = normal[2] ? " and applied service soil overburden" : "";
+    return String.raw`N = ${formatTexNumberForUnit(normal[1], "kN")}\,\mathrm{kN}\quad\text{including footing self-weight${overburden}}`;
   }
 
   const moments = detail.match(/^Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m at footing center\.$/);
@@ -1612,7 +1613,7 @@ function mathText(text: string) {
   const html = esc(text)
     .replace(/q = P\/A \+\/- Mx\/Sx \+\/- Mz\/Sz/g, () => token(String.raw`q = \frac{P}{A}\pm\frac{M_x}{S_x}\pm\frac{M_z}{S_z}`))
     .replace(/H &lt;= mu N \/ 1.5/g, () => token(String.raw`H \le \frac{\mu N}{1.5}`))
-    .replace(/N = ([0-9.,-]+) kN including footing self-weight(?: and (?:applied service )?soil overburden)?\./g, (_, n) => token(String.raw`N = ${formatTexNumberForUnit(n, "kN")}\,\mathrm{kN}\quad\text{including footing self-weight and applied service soil overburden}`))
+    .replace(/N = ([0-9.,-]+) kN including footing self-weight( and (?:applied service )?soil overburden)?\./g, (_, n, overburden) => token(String.raw`N = ${formatTexNumberForUnit(n, "kN")}\,\mathrm{kN}\quad\text{including footing self-weight${overburden ? " and applied service soil overburden" : ""}}`))
     .replace(/Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m at footing center\./g, (_, mx, mz) => token(String.raw`M_x = ${formatTexNumberForUnit(mx, "kN-m")}\,\mathrm{kN\cdot m},\quad M_z = ${formatTexNumberForUnit(mz, "kN-m")}\,\mathrm{kN\cdot m}\quad\text{at footing center}`))
     .replace(/qmin = ([0-9.,-]+) kPa\./g, (_, qmin) => token(String.raw`q_{min} = ${formatTexNumberForUnit(qmin, "kPa")}\,\mathrm{kPa}`))
     .replace(/FS = ([0-9.,-]+|infinite)\./g, (_, fs) => token(String.raw`\mathrm{FS} = ${fs === "infinite" ? String.raw`\infty` : formatTexNumber(fs)}`))
