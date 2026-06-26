@@ -1322,6 +1322,14 @@ export default function Home() {
   const [isSelectingCells, setIsSelectingCells] = useState(false);
   const isSelectingCellsRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Right column: the 3D model sticks at top, then hands off to the soil-bearing
+  // plan exactly when the Design checks card reaches the top. Since the two live
+  // in independent grid columns, we measure the vertical distance from the
+  // column top to the Design checks card and size a spacer above the plan so its
+  // sticky takeover lands right at the start of Design checks.
+  const rightColumnRef = useRef<HTMLElement>(null);
+  const mainColumnRef = useRef<HTMLDivElement>(null);
+  const [planStickyOffset, setPlanStickyOffset] = useState(0);
   const [selectedCells, setSelectedCells] = useState<SelectionRange | null>(
     null
   );
@@ -1404,10 +1412,7 @@ export default function Home() {
     () => strengthLoadCases.filter((loadCase) => !isEmptyLoadCase(loadCase)),
     [strengthLoadCases]
   );
-  const maxCompression = Math.max(
-    0,
-    ...activeLoadCases.map((loadCase) => loadCase.P)
-  );
+
   const soilTreatmentLabel =
     SOIL_TREATMENT_OPTIONS.find((option) => option.value === soilTreatmentMode)
       ?.label ?? "Service / stability";
@@ -1573,6 +1578,34 @@ export default function Home() {
     window.addEventListener("mouseup", stopSelecting);
     return () => window.removeEventListener("mouseup", stopSelecting);
   }, [isSelectingCells]);
+
+  // Keep the spacer above the soil-bearing plan equal to the distance from the
+  // right column's top to the Design checks card, so the plan's sticky takeover
+  // begins exactly at Design checks. Only at xl, where the two share a row.
+  useEffect(() => {
+    const measure = () => {
+      const isXl = window.matchMedia("(min-width: 1280px)").matches;
+      const checks = document.getElementById("card-design-checks");
+      const column = rightColumnRef.current;
+      if (!isXl || !checks || !column) {
+        setPlanStickyOffset(0);
+        return;
+      }
+      const offset =
+        checks.getBoundingClientRect().top - column.getBoundingClientRect().top;
+      // Subtract the plan's own top margin (mt-4 = 1rem) so its top edge, not the
+      // gap above it, aligns with the Design checks card.
+      setPlanStickyOffset(Math.max(0, offset - 16));
+    };
+    measure();
+    const observer = new ResizeObserver(() => measure());
+    if (mainColumnRef.current) observer.observe(mainColumnRef.current);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [units, loadCombinationType, soilTreatmentMode, displayPrecision]);
 
   const updateGeometry = (key: keyof FootingGeometry, value: number) => {
     setGeometry((current) =>
@@ -2663,10 +2696,10 @@ export default function Home() {
 
         <main className="mx-auto grid max-w-7xl grid-cols-1 items-start gap-4 px-6 py-5 xl:grid-cols-[12rem_minmax(0,1fr)_22rem]">
           <aside className="hidden xl:sticky xl:top-4 xl:block">
-            <TableOfContents />
+            <TableOfContents checks={designResults.checks} />
           </aside>
 
-          <div className="space-y-4">
+          <div ref={mainColumnRef} className="space-y-4">
             <Card id="card-geometry">
               <CardHeader>
                 <CardTitle>Geometry</CardTitle>
@@ -3457,6 +3490,7 @@ export default function Home() {
                     return (
                     <div
                       key={item.id}
+                      id={`check-${item.id}`}
                       className="relative rounded-md border bg-white p-3 dark:bg-slate-950"
                     >
                       <div className="pr-24">
@@ -3958,6 +3992,28 @@ export default function Home() {
                         reference: null,
                       },
                       {
+                        k: "H-hp",
+                        name: (
+                          <>
+                            <FormulaValue tex="h_p" /> - pedestal height
+                          </>
+                        ),
+                        value: formatDisplay(geometry.pedestalHeight, lengthUnit),
+                        unit: lengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "M-min-contact",
+                        name: (
+                          <>
+                            <FormulaValue tex="A_{c,min}" /> - minimum contact ratio
+                          </>
+                        ),
+                        value: fmt(materials.minimumContactRatio, 1),
+                        unit: "%",
+                        reference: null,
+                      },
+                      {
                         k: "P-pedestal-footprint",
                         name: <>Pedestal footprint</>,
                         value: (
@@ -4135,13 +4191,79 @@ export default function Home() {
                         reference: null,
                       },
                       {
-                        k: "P-Pmax",
+                        k: "A-area",
                         name: (
                           <>
-                            <FormulaValue tex="P_{max}" /> - max compression
+                            <FormulaValue tex="A" /> - footing plan area
                           </>
                         ),
-                        value: formatDisplay(maxCompression, forceUnit),
+                        value: formatDisplay(
+                          units === "SI"
+                            ? geometry.footingLength * geometry.footingWidth
+                            : geometry.footingLength * geometry.footingWidth,
+                          `${lengthUnit}²`
+                        ),
+                        unit: `${lengthUnit}²`,
+                        reference: null,
+                      },
+                      {
+                        k: "D-davg",
+                        name: (
+                          <>
+                            <FormulaValue tex="d_{avg}" /> - average shear depth
+                          </>
+                        ),
+                        value: formatDisplay(
+                          convertedValue(designResults.summary.averageShearDepth, "mm", units),
+                          coverUnit
+                        ),
+                        unit: coverUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "L-Le",
+                        name: (
+                          <>
+                            <FormulaValue tex="L_e" /> - elastic length
+                          </>
+                        ),
+                        value:
+                          designResults.rigidity.elasticLength === null
+                            ? "N/A"
+                            : formatDisplay(
+                                units === "SI"
+                                  ? designResults.rigidity.elasticLength
+                                  : designResults.rigidity.elasticLength * M_TO_FT,
+                                lengthUnit
+                              ),
+                        unit: lengthUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "P-Pmax-svc",
+                        name: (
+                          <>
+                            <FormulaValue tex="P_{max,svc}" /> - max service compression
+                          </>
+                        ),
+                        value: formatDisplay(
+                          convertedValue(designResults.summary.maxServiceCompression, "kN", units),
+                          forceUnit
+                        ),
+                        unit: forceUnit,
+                        reference: null,
+                      },
+                      {
+                        k: "P-Pmax-str",
+                        name: (
+                          <>
+                            <FormulaValue tex="P_{max,str}" /> - max strength compression
+                          </>
+                        ),
+                        value: formatDisplay(
+                          convertedValue(designResults.summary.maxStrengthCompression, "kN", units),
+                          forceUnit
+                        ),
                         unit: forceUnit,
                         reference: null,
                       },
@@ -4244,25 +4366,28 @@ export default function Home() {
                 </div>
               </CardContent>
             </Card>
+
           </div>
 
-          <aside className="xl:sticky xl:top-4">
-            <Card
-              id="card-3d-model"
-              size="sm"
-              className="xl:max-h-[calc(100vh-8rem)] xl:overflow-y-auto"
-            >
-              <CardHeader className="gap-0.5">
-                <CardTitle>3D model</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <FootingModel3d geometry={geometry} />
-              </CardContent>
-            </Card>
+          <aside ref={rightColumnRef} className="xl:self-stretch">
+            <div style={planStickyOffset ? { height: planStickyOffset } : undefined}>
+              <Card
+                id="card-3d-model"
+                size="sm"
+                className="xl:sticky xl:top-4"
+              >
+                <CardHeader className="gap-0.5">
+                  <CardTitle>3D model</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <FootingModel3d geometry={geometry} />
+                </CardContent>
+              </Card>
+            </div>
 
-            <Card id="card-contact-plan" size="sm" className="mt-4">
+            <Card id="card-contact-plan" size="sm" className="mt-4 xl:sticky xl:top-4">
               <CardHeader className="gap-0.5">
-                <CardTitle>Soil-contact plan</CardTitle>
+                <CardTitle>Soil bearing pressure</CardTitle>
                 <CardDescription className="text-[11px]/snug">
                   Load case
                 </CardDescription>

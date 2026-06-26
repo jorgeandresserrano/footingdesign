@@ -1078,6 +1078,7 @@ function inputRows(state: FootingReportState): ReportRow[] {
     { key: "zz-mu", symbol: "\\mu", label: "soil friction coefficient", value: f(state.materials.soilFrictionCoefficient, 3), unit: "" },
     { key: "zz-theta-x", symbol: "\\theta_{x,allow}", label: "allowable rotation X", value: f(state.materials.allowableRotationX, 4), unit: "rad" },
     { key: "zz-theta-z", symbol: "\\theta_{z,allow}", label: "allowable rotation Z", value: f(state.materials.allowableRotationZ, 4), unit: "rad" },
+    { key: "zz-min-contact", symbol: "A_{c,min}", label: "minimum contact ratio", value: f(state.materials.minimumContactRatio, 1), unit: "%" },
   ];
 }
 
@@ -1096,6 +1097,8 @@ function computedRows(state: FootingReportState): ReportRow[] {
     { key: "D-dx", symbol: "d_x", label: "effective depth X", value: fv(convert(state.results.summary.effectiveDepthX, "mm", state.units), u.cover), unit: u.cover },
     { key: "D-dz", symbol: "d_z", label: "effective depth Z", value: fv(convert(state.results.summary.effectiveDepthZ, "mm", state.units), u.cover), unit: u.cover },
     { key: "L-Le", symbol: "L_e", label: "elastic length", value: state.results.rigidity.elasticLength === null ? "N/A" : fv(convert(state.results.rigidity.elasticLength, "m", state.units), u.length), unit: u.length },
+    { key: "P-Pmax-svc", symbol: "P_{max,svc}", label: "max service compression", value: fv(convert(state.results.summary.maxServiceCompression, "kN", state.units), u.force), unit: u.force },
+    { key: "P-Pmax-str", symbol: "P_{max,str}", label: "max strength compression", value: fv(convert(state.results.summary.maxStrengthCompression, "kN", state.units), u.force), unit: u.force },
     { key: "Q-qmax", symbol: "q_{max}", label: "max service bearing", value: governingService ? fv(convert(governingService.maxBearing, "kPa", state.units), u.pressure) : "N/A", unit: u.pressure },
     { key: "Q-qnet", symbol: "q_{net,max}", label: "max strength net pressure", value: governingStrength ? fv(convert(governingStrength.maxNetPressure, "kPa", state.units), u.pressure) : "N/A", unit: u.pressure },
     { key: "S-status", symbol: "\\text{Status}", label: "overall status", value: statusLabel(state.results.summary.overallStatus), unit: "" },

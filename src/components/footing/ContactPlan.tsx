@@ -230,34 +230,11 @@ export function ContactPlan({ geometry, planCase, formatPressure }: Props) {
         ) : null}
       </div>
 
-      <div className="space-y-1 text-[11px] text-muted-foreground">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-          <span className="font-medium text-foreground">{planCase.name}</span>
-          <span className="capitalize">contact: {contactState}</span>
-          <span>{contactPercent.toFixed(1)}% of base</span>
-        </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-          <span>
-            q<sub>max</sub> {formatPressure(peak)}
-          </span>
-          <span>
-            q<sub>min</sub> {formatPressure(Math.max(minP, 0))}
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-          <span className="inline-flex items-center gap-1">
-            <span className="inline-block size-2 rounded-full bg-[#b91c1c]" />
-            resultant
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span className="inline-block size-2 rounded-sm bg-[#3b82f6]" />
-            contact
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span className="inline-block size-2 rounded-sm border border-[#cbd5e1] bg-[#f1f5f9]" />
-            lifted
-          </span>
-        </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+        <span className="capitalize">contact: {contactState}</span>
+        <span>{contactPercent.toFixed(1)}% of base</span>
+        <span>q<sub>max</sub> {formatPressure(peak)}</span>
+        <span>q<sub>min</sub> {formatPressure(Math.max(minP, 0))}</span>
       </div>
     </div>
   );

@@ -1929,7 +1929,7 @@ export function calculateFootingDesign({
       details: settlementGoverning
         ? [`qmax = ${round(settlementGoverning.maxBearing)} kPa.`]
         : [],
-      notes: ["Does not include consolidation or layered-soil behavior."],
+      notes: [],
       invalid: serviceBearing.length === 0,
     })
   );
