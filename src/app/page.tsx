@@ -87,6 +87,7 @@ import {
   DEFAULT_DISPLAY_PRECISION,
   DISPLAY_PRECISION_ROWS,
   clampDisplayDigits,
+  defaultDisplayPrecision,
   displayDigitsForUnit,
   type DisplayPrecisionSpec,
 } from "@/lib/displayPrecision";
@@ -699,12 +700,25 @@ function ensureTrailingBlank(loadCases: LoadCase[]) {
   ];
 }
 
+// Round to a fixed number of significant figures rather than a fixed number of
+// decimal places. Fixed decimals (e.g. 3) lose too much precision for
+// small-magnitude USC values (cover ~2.95 in, settlement ~0.98 in), so a
+// SI -> USC -> SI round-trip could not recover the clean input (200 kPa came
+// back as 199.996). Significant-figure rounding keeps the conversion reversible
+// regardless of magnitude while still trimming floating-point noise.
+function roundToSignificant(value: number, digits: number) {
+  if (!Number.isFinite(value) || value === 0) return value;
+  const magnitude = Math.ceil(Math.log10(Math.abs(value)));
+  const factor = Math.pow(10, digits - magnitude);
+  return Math.round(value * factor) / factor;
+}
+
 function roundLength(value: number) {
-  return Math.round(value * 1000) / 1000;
+  return roundToSignificant(value, 9);
 }
 
 function roundMaterial(value: number) {
-  return Math.round(value * 1000) / 1000;
+  return roundToSignificant(value, 9);
 }
 
 function roundAutoCalculatedMaterial(value: number) {
@@ -863,6 +877,12 @@ function defaultStrengthLoadCases(units: UnitSystem): LoadCase[] {
   return units === "SI"
     ? ensureTrailingBlank(DEFAULT_STRENGTH_LOAD_CASES_SI)
     : convertLoadCases(DEFAULT_STRENGTH_LOAD_CASES_SI, "SI", "USC");
+}
+
+function isSamePrecision(a: DisplayPrecisionSpec, b: DisplayPrecisionSpec) {
+  return (Object.keys(b) as Array<keyof DisplayPrecisionSpec>).every(
+    (key) => a[key] === b[key]
+  );
 }
 
 function fmt(value: number, digits = 3) {
@@ -2055,6 +2075,13 @@ export default function Home() {
     setStrengthLoadCases((current) =>
       convertLoadCases(current, units, nextUnits)
     );
+    // Precision keys are shared across unit systems, so swap to the new
+    // system's defaults unless the user has customized them.
+    setDisplayPrecision((current) =>
+      isSamePrecision(current, defaultDisplayPrecision(units))
+        ? defaultDisplayPrecision(nextUnits)
+        : current
+    );
     setUnits(nextUnits);
   };
 
@@ -2682,7 +2709,9 @@ export default function Home() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setDisplayPrecision(DEFAULT_DISPLAY_PRECISION)}
+                  onClick={() =>
+                    setDisplayPrecision(defaultDisplayPrecision(units))
+                  }
                 >
                   Reset
                 </Button>

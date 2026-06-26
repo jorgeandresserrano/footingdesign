@@ -69,6 +69,7 @@ const KN_PER_M_TO_KIP_PER_FT = KN_TO_KIP / M_TO_FT;
 const KN_M_PER_M_TO_KIP_FT_PER_FT = KN_M_TO_KIP_FT / M_TO_FT;
 const MM2_PER_M_TO_IN2_PER_FT = 0.0015500031 / M_TO_FT;
 const DEFAULT_SERVICE_SLIDING_SAFETY_FACTOR = 1.5;
+const DEFAULT_SERVICE_OVERTURNING_SAFETY_FACTOR = 1.5;
 let activeDisplayPrecision: DisplayPrecisionSpec = DEFAULT_DISPLAY_PRECISION;
 
 export function createFootingCalculationBriefHtml(state: FootingReportState) {
@@ -611,6 +612,7 @@ function calculationSection(
     })}
     ${serviceBearingCalculations(state)}
     ${checkCalc(state, "service-bearing")}
+    ${contactDecision(state)}
     ${checkCalc(state, "soil-contact")}
     ${checkCalc(state, "factored-bearing")}
 
@@ -686,6 +688,40 @@ function calculationSection(
     ${flags.isAci ? "" : `<h3 class="calc-sub" id="csa-ductility">CSA Ductility</h3>${csaDuctilityCalculations(state, data)}${checkCalc(state, "ductility-x")}${checkCalc(state, "ductility-z")}`}
     ${flags.hasTorsion ? `<h3 class="calc-sub" id="torsion-warning">Torsion Warning</h3>${checkCalc(state, "vertical-torsion")}` : ""}
   `;
+}
+
+function contactDecision(state: FootingReportState) {
+  const contact = checkById(state, "soil-contact")?.contact;
+  const contactState = contact?.state ?? "full";
+  const minRequired =
+    contact?.minRequired ??
+    Math.min(Math.max(state.materials.minimumContactRatio, 0), 100);
+  const percent = contact?.percent ?? 100;
+  const belowFloor = contactState === "partial" && percent < minRequired - EPS;
+  return decision({
+    title: "Compression-only soil contact",
+    branches: [
+      {
+        label: "Full",
+        condition: String.raw`\text{resultant within kern}`,
+        active: contactState === "full",
+        consequence: "linear pressure acts over the whole base with no uplift.",
+      },
+      {
+        label: "Partial",
+        condition: String.raw`\text{resultant outside kern, contact} \ge ${num(minRequired, 1)}\%`,
+        active: contactState === "partial" && !belowFloor,
+        consequence: `bearing is redistributed over the reduced compression polygon; permitted as a review while contact stays at or above the ${num(minRequired, 1)}% floor.`,
+      },
+      {
+        label: "Below floor / uplift",
+        condition: String.raw`\text{contact} < ${num(minRequired, 1)}\%\ \text{or net uplift}`,
+        active: belowFloor || contactState === "zero" || contactState === "failed",
+        consequence:
+          "contact below the minimum floor, or net uplift (zero contact), is rejected as a failure.",
+      },
+    ],
+  });
 }
 
 function serviceBearingCalculations(state: FootingReportState) {
@@ -1163,16 +1199,33 @@ function traceMapTable(
   state: FootingReportState,
   flags: { isAci: boolean; isIbc: boolean; hasTorsion: boolean }
 ) {
+  const slidingSafetyFactor = Math.max(
+    state.materials.slidingSafetyFactor || DEFAULT_SERVICE_SLIDING_SAFETY_FACTOR,
+    EPS
+  );
+  const overturningSafetyFactor = Math.max(
+    state.materials.overturningSafetyFactor || DEFAULT_SERVICE_OVERTURNING_SAFETY_FACTOR,
+    EPS
+  );
+  const minContact = Math.min(Math.max(state.materials.minimumContactRatio, 0), 100);
   const rows = [
     ["Code basis", flags.isIbc ? `${state.buildingCode} with ${state.loadStandard}` : `${state.buildingCode} with NBCC load combinations`, "Building code selects concrete/load standard pairing."],
     ["Geometry", "Footing plan, pedestal footprint, offsets, and thickness", "Drives area, section moduli, effective depths, critical sections."],
-    ["Self-weight", "Concrete volume times concrete unit weight", "Included in service bearing/sliding normal force."],
+    ["Self-weight", "Concrete weight with groundwater buoyancy below the water table", "Footing self-weight Wf in the service normal force."],
+    ["Soil overburden", `Soil over the footing, pedestal footprint excluded (treatment: ${soilTreatmentLabel(state.soilTreatmentMode)})`, "Ws via eta_s,svc in service and Df eta_s,u in strength."],
+    ["Frost depth", "Footing bottom depth vs entered frost depth", "Bottom must sit at or below the frost depth."],
     ["Service bearing", "All service load cases", "Worst qmax controls bearing; qmin controls no-uplift."],
-    ["Sliding", "All service load cases", "Worst H/(mu N / 1.5) controls."],
+    ["Soil contact", "Compression-only redistribution per service case", `Full/partial/zero contact; partial below the ${f(minContact, 1)}% floor fails.`],
+    ["Sliding", "All service load cases", `Worst H/(mu N / ${f(slidingSafetyFactor, 2)}) controls; friction only.`],
+    ["Overturning", "All service load cases about each edge", `${f(overturningSafetyFactor, 2)} |M| <= N B/2 about each axis.`],
+    ["Settlement & rotation", "Winkler response from peak pressure and gradients", "s = qmax/ks; theta = |dq|/ks vs allowables."],
     ["Rigidity", "Adapted ACI 336.2R advisory", "Rigid, flexible, or needs ks/Ec."],
+    ["Factored bearing", "All strength load cases", "Gross qmax checked against ultimate soil bearing."],
     ["Concrete family", flags.isAci ? "ACI branch taken" : "CSA branch taken", flags.isAci ? "CSA ductility not applicable." : "CSA ductility checks included."],
-    ["Strength actions", "All strength load cases", "Worst flexure, one-way shear, and punching demands govern separately."],
+    ["Reinforcement & depth", "Effective depths and provided vs minimum steel", "dx, dz and As,min each direction."],
+    ["Strength actions", "All strength load cases", "Worst flexure and one-way shear demands govern separately."],
     ["Punching", "Critical perimeter at d/2", "Direct shear plus moment-transfer stress."],
+    ...(flags.isAci ? [] : [["CSA ductility", "c/d at each flexural section", "c limited to 0.8(700/(700+fy))d."]]),
     ["Torsion", flags.hasTorsion ? "Warning included" : "No nonzero T", "T is listed but not included in footing capacity checks."],
   ];
   return `<table><thead><tr><th>Step</th><th>What is evaluated</th><th>Decision/result</th></tr></thead><tbody>${rows
@@ -1623,7 +1676,7 @@ function mathText(text: string) {
     .replace(/([0-9.]+) \|Mx\| &lt;= N B\/2\./g, (_, sf) => token(String.raw`${formatTexNumber(sf)}\,\lvert M_x \rvert \le \frac{NB}{2}`))
     .replace(/([0-9.]+) \|Mz\| &lt;= N L\/2\./g, (_, sf) => token(String.raw`${formatTexNumber(sf)}\,\lvert M_z \rvert \le \frac{NL}{2}`))
     .replace(/q = P\/A \+\/- Mx\/Sx \+\/- Mz\/Sz/g, () => token(String.raw`q = \frac{P}{A}\pm\frac{M_x}{S_x}\pm\frac{M_z}{S_z}`))
-    .replace(/H &lt;= mu N \/ 1.5/g, () => token(String.raw`H \le \frac{\mu N}{1.5}`))
+    .replace(/H &lt;= mu N \/ ([0-9]+(?:\.[0-9]+)?)/g, (_, sf) => token(String.raw`H \le \frac{\mu N}{${formatTexNumber(sf)}}`))
     .replace(/N = ([0-9.,-]+) kN including footing self-weight( and (?:applied service )?soil overburden)?\./g, (_, n, overburden) => token(String.raw`N = ${formatTexNumberForUnit(n, "kN")}\,\mathrm{kN}\quad\text{including footing self-weight${overburden ? " and applied service soil overburden" : ""}}`))
     .replace(/Mx = ([0-9.,-]+) kN-m, Mz = ([0-9.,-]+) kN-m at footing center\./g, (_, mx, mz) => token(String.raw`M_x = ${formatTexNumberForUnit(mx, "kN-m")}\,\mathrm{kN\cdot m},\quad M_z = ${formatTexNumberForUnit(mz, "kN-m")}\,\mathrm{kN\cdot m}\quad\text{at footing center}`))
     .replace(/qmin = ([0-9.,-]+) kPa\./g, (_, qmin) => token(String.raw`q_{min} = ${formatTexNumberForUnit(qmin, "kPa")}\,\mathrm{kPa}`))

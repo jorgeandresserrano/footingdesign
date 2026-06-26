@@ -54,6 +54,31 @@ export const DEFAULT_DISPLAY_PRECISION: DisplayPrecisionSpec = {
   "(kN/m)/m²": 3,
 };
 
+// USC values typically read with one decimal where SI uses whole/three, so the
+// keys (shared across both unit systems) carry a different default set.
+export const USC_DISPLAY_PRECISION: DisplayPrecisionSpec = {
+  m: 1,
+  "m²": 1,
+  "m³": 1,
+  mm: 0,
+  "mm²": 0,
+  "mm²/m": 1,
+  kPa: 1,
+  kN: 1,
+  "kN/m": 1,
+  "kN·m": 1,
+  "kN·m/m": 1,
+  MPa: 1,
+  "kN/m³": 1,
+  "(kN/m)/m²": 0,
+};
+
+export function defaultDisplayPrecision(
+  units: "SI" | "USC"
+): DisplayPrecisionSpec {
+  return units === "USC" ? USC_DISPLAY_PRECISION : DEFAULT_DISPLAY_PRECISION;
+}
+
 export function normalizeDisplayUnit(unit?: string): DisplayPrecisionKey | null {
   if (!unit) return null;
   const normalized = unit
