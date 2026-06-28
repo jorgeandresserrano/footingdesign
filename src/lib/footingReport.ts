@@ -13,6 +13,10 @@ import type {
   SoilTreatmentMode,
 } from "./footingEngine";
 import {
+  addSoilWeightMoments,
+  loadMomentsAtFootingCenter,
+} from "./footingEngine";
+import {
   DEFAULT_DISPLAY_PRECISION,
   displayDigitsForUnit,
   type DisplayPrecisionSpec,
@@ -736,17 +740,19 @@ function serviceBearingCalculations(state: FootingReportState) {
       const soilFactors = soilTreatmentFactors(state.soilTreatmentMode);
       const moments = addSoilWeightMoments(
         loadMoments,
-        state.results.summary.soilOverburdenWeight,
-        data.soilCentroidX,
-        data.soilCentroidZ,
+        {
+          weight: state.results.summary.soilOverburdenWeight,
+          centroidX: data.soilCentroidX,
+          centroidZ: data.soilCentroidZ,
+        },
         soilFactors.service
       );
       return calc(`Service bearing - ${loadName(loadCase)}`, [
         String.raw`\eta_{s,svc} = ${num(soilFactors.service, 0)}`,
         String.raw`M_x^* = M_x + H_z h_p + P e_z + \eta_{s,svc}W_s z_s`,
         String.raw`M_x^* = ${q(loadCase.Mx, "kN m")} + ${q(loadCase.Hz, "kN")} \times ${q(state.geometry.pedestalHeight, "m")} + ${q(loadCase.P, "kN")} \times ${q(state.geometry.pedestalOffsetZ, "m")} + ${num(soilFactors.service, 0)} \times ${q(state.results.summary.soilOverburdenWeight, "kN")} \times ${q(data.soilCentroidZ, "m")} = ${q(moments.mx, "kN m")}`,
-        String.raw`M_z^* = M_z - H_x h_p - P e_x - \eta_{s,svc}W_s x_s`,
-        String.raw`M_z^* = ${q(loadCase.Mz, "kN m")} - ${q(loadCase.Hx, "kN")} \times ${q(state.geometry.pedestalHeight, "m")} - ${q(loadCase.P, "kN")} \times ${q(state.geometry.pedestalOffsetX, "m")} - ${num(soilFactors.service, 0)} \times ${q(state.results.summary.soilOverburdenWeight, "kN")} \times ${q(data.soilCentroidX, "m")} = ${q(moments.mz, "kN m")}`,
+        String.raw`M_z^* = M_z + H_x h_p + P e_x + \eta_{s,svc}W_s x_s`,
+        String.raw`M_z^* = ${q(loadCase.Mz, "kN m")} + ${q(loadCase.Hx, "kN")} \times ${q(state.geometry.pedestalHeight, "m")} + ${q(loadCase.P, "kN")} \times ${q(state.geometry.pedestalOffsetX, "m")} + ${num(soilFactors.service, 0)} \times ${q(state.results.summary.soilOverburdenWeight, "kN")} \times ${q(data.soilCentroidX, "m")} = ${q(moments.mz, "kN m")}`,
         String.raw`N = P + W_f + \eta_{s,svc}W_s = ${q(loadCase.P, "kN")} + ${q(state.results.summary.footingSelfWeight, "kN")} + ${num(soilFactors.service, 0)} \times ${q(state.results.summary.soilOverburdenWeight, "kN")} = ${q(row?.axial ?? 0, "kN")}`,
         String.raw`q = \frac{N}{A} \pm \frac{M_x^*}{S_x} \pm \frac{M_z^*}{S_z}`,
         String.raw`q_{max} = ${q(row?.maxBearing ?? 0, "kPa")};\quad q_{min} = ${q(row?.minBearing ?? 0, "kPa")};\quad A=${q(data.area, "m^2")},\;S_x=${q(data.sx, "m^3")},\;S_z=${q(data.sz, "m^3")}`,
@@ -843,16 +849,18 @@ function strengthPressureCalculations(state: FootingReportState) {
       const soilFactors = soilTreatmentFactors(state.soilTreatmentMode);
       const grossMoments = addSoilWeightMoments(
         loadMoments,
-        state.results.summary.soilOverburdenWeight,
-        data.soilCentroidX,
-        data.soilCentroidZ,
+        {
+          weight: state.results.summary.soilOverburdenWeight,
+          centroidX: data.soilCentroidX,
+          centroidZ: data.soilCentroidZ,
+        },
         factor * soilFactors.strength
       );
       return calc(`Strength actions - ${loadName(loadCase)}`, [
         String.raw`D_f = ${num(factor, 3)}`,
         String.raw`\eta_{s,u} = ${num(soilFactors.strength, 0)}`,
         String.raw`M_{x,g}^* = M_x + H_z h_p + P e_z + D_f\eta_{s,u}W_s z_s = ${q(grossMoments.mx, "kN m")}`,
-        String.raw`M_{z,g}^* = M_z - H_x h_p - P e_x - D_f\eta_{s,u}W_s x_s = ${q(grossMoments.mz, "kN m")}`,
+        String.raw`M_{z,g}^* = M_z + H_x h_p + P e_x + D_f\eta_{s,u}W_s x_s = ${q(grossMoments.mz, "kN m")}`,
         String.raw`N_g = P + D_f(W_f + \eta_{s,u}W_s)`,
         String.raw`q_g = \frac{N_g}{A} \pm \frac{M_{x,g}^*}{S_x} \pm \frac{M_{z,g}^*}{S_z}`,
         String.raw`q_{g,max} = ${q(row?.maxGrossBearing ?? 0, "kPa")};\quad q_{g,min} = ${q(row?.minGrossBearing ?? 0, "kPa")}`,
@@ -1385,33 +1393,6 @@ function derived(state: FootingReportState) {
     projectionZ,
     alpha1,
     beta1,
-  };
-}
-
-function loadMomentsAtFootingCenter(loadCase: EngineLoadCase, geometry: EngineGeometry) {
-  return {
-    mx:
-      loadCase.Mx +
-      loadCase.Hz * geometry.pedestalHeight +
-      loadCase.P * geometry.pedestalOffsetZ,
-    mz:
-      loadCase.Mz -
-      loadCase.Hx * geometry.pedestalHeight -
-      loadCase.P * geometry.pedestalOffsetX,
-  };
-}
-
-function addSoilWeightMoments(
-  moments: ReturnType<typeof loadMomentsAtFootingCenter>,
-  soilWeight: number,
-  soilCentroidX: number,
-  soilCentroidZ: number,
-  factor = 1
-) {
-  const factoredSoilWeight = factor * soilWeight;
-  return {
-    mx: moments.mx + factoredSoilWeight * soilCentroidZ,
-    mz: moments.mz - factoredSoilWeight * soilCentroidX,
   };
 }
 

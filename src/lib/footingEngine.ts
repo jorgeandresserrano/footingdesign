@@ -495,9 +495,9 @@ function soilOverburden(
   };
 }
 
-function addSoilWeightMoments(
+export function addSoilWeightMoments(
   moments: Pick<PressureField, "mx" | "mz">,
-  soil: SoilOverburden,
+  soil: Pick<SoilOverburden, "weight" | "centroidX" | "centroidZ">,
   factor = 1
 ) {
   const factoredSoilWeight = factor * soil.weight;
@@ -520,7 +520,7 @@ function soilTreatmentFactors(mode: SoilTreatmentMode) {
   };
 }
 
-function loadMomentsAtFootingCenter(
+export function loadMomentsAtFootingCenter(
   loadCase: EngineLoadCase,
   geometry: EngineGeometry
 ) {
